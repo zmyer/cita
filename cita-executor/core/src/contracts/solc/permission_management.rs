@@ -1,5 +1,5 @@
 // CITA
-// Copyright 2016-2017 Cryptape Technologies LLC.
+// Copyright 2016-2019 Cryptape Technologies LLC.
 
 // This program is free software: you can redistribute it
 // and/or modify it under the terms of the GNU General Public
@@ -112,7 +112,7 @@ impl<'a> PermissionManagement<'a> {
     }
 
     pub fn default_all_accounts() -> Vec<Address> {
-        error!("Use default all accounts.");
+        info!("Use default all accounts.");
         Vec::new()
     }
 
@@ -147,7 +147,7 @@ impl<'a> PermissionManagement<'a> {
     }
 
     pub fn default_permissions() -> Vec<Address> {
-        error!("Use default permissions.");
+        info!("Use default permissions.");
         Vec::new()
     }
 
@@ -182,7 +182,7 @@ pub fn contains_resource(
 
 #[cfg(test)]
 mod tests {
-    extern crate logger;
+    extern crate cita_logger as logger;
 
     use super::contains_resource;
     use super::{PermissionManagement, Resource, DEFAULT_SUPER_ADEMIN};

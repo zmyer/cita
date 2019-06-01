@@ -19,13 +19,16 @@
 
 //! Single account in the system.
 
+use cita_db::{trie, DBValue, HashDB, Trie, TrieFactory};
 use cita_types::traits::LowerHex;
 use cita_types::{Address, H256, U256};
+use hashable::{Hashable, HASH_EMPTY, HASH_NULL_RLP};
 use lru_cache::LruCache;
 use pod_account::*;
 use rlp::*;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::convert::Into;
 use std::fmt;
 use std::sync::Arc;
 use types::basic_account::BasicAccount;
@@ -130,9 +133,9 @@ impl Account {
             storage_root: HASH_NULL_RLP,
             storage_cache: Self::empty_storage_cache(),
             storage_changes: pod.storage.into_iter().collect(),
-            code_hash: pod.code.as_ref().map_or(HASH_EMPTY, |c| c.crypt_hash()),
+            code_hash: pod.code.as_ref().map_or(HASH_EMPTY, Hashable::crypt_hash),
             code_filth: Filth::Dirty,
-            code_size: Some(pod.code.as_ref().map_or(0, |c| c.len())),
+            code_size: Some(pod.code.as_ref().map_or(0, Vec::len)),
             code_cache: Arc::new(pod.code.map_or_else(
                 || {
                     warn!("POD account with unknown code is being created! Assuming no code.");
@@ -140,9 +143,9 @@ impl Account {
                 },
                 |c| c,
             )),
-            abi_hash: pod.abi.as_ref().map_or(HASH_EMPTY, |c| c.crypt_hash()),
+            abi_hash: pod.abi.as_ref().map_or(HASH_EMPTY, Hashable::crypt_hash),
             abi_filth: Filth::Dirty,
-            abi_size: Some(pod.abi.as_ref().map_or(0, |c| c.len())),
+            abi_size: Some(pod.abi.as_ref().map_or(0, Vec::len)),
             abi_cache: Arc::new(pod.abi.map_or_else(
                 || {
                     warn!("POD account with unknown ABI is being created! Assuming no abi.");
@@ -269,7 +272,7 @@ impl Account {
     /// Verify value proof of the trie's storage at `key`.
     pub fn verify_value_proof(&self, key: &H256, proof: &[Bytes]) -> Option<H256> {
         trie::triedb::verify_value_proof(key, self.storage_root, proof, ::rlp::decode)
-            .map(|v: U256| v.into())
+            .map(&Into::into as &Fn(U256) -> H256)
     }
 
     /// Get cached storage value if any. Returns `None` if the
@@ -471,20 +474,21 @@ impl Account {
             self.code_hash,
             self.code_cache.lower_hex()
         );
-        self.code_size.is_some() || if self.code_hash != HASH_EMPTY {
-            match db.get(&self.code_hash) {
-                Some(x) => {
-                    self.code_size = Some(x.len());
-                    true
+        self.code_size.is_some()
+            || if self.code_hash != HASH_EMPTY {
+                match db.get(&self.code_hash) {
+                    Some(x) => {
+                        self.code_size = Some(x.len());
+                        true
+                    }
+                    _ => {
+                        warn!("Failed get code of {}", self.code_hash);
+                        false
+                    }
                 }
-                _ => {
-                    warn!("Failed get code of {}", self.code_hash);
-                    false
-                }
+            } else {
+                false
             }
-        } else {
-            false
-        }
     }
 
     /// Provide a database to get `abi_size`. Should not be called if it is a contract without abi.
@@ -496,20 +500,21 @@ impl Account {
             self.abi_hash,
             self.abi_cache.lower_hex()
         );
-        self.abi_size.is_some() || if self.abi_hash != HASH_EMPTY {
-            match db.get(&self.abi_hash) {
-                Some(x) => {
-                    self.abi_size = Some(x.len());
-                    true
+        self.abi_size.is_some()
+            || if self.abi_hash != HASH_EMPTY {
+                match db.get(&self.abi_hash) {
+                    Some(x) => {
+                        self.abi_size = Some(x.len());
+                        true
+                    }
+                    _ => {
+                        warn!("Failed get abi of {}", self.abi_hash);
+                        false
+                    }
                 }
-                _ => {
-                    warn!("Failed get abi of {}", self.abi_hash);
-                    false
-                }
+            } else {
+                false
             }
-        } else {
-            false
-        }
     }
 
     /// Determine whether there are any un-`commit()`-ed storage-setting operations.
@@ -576,7 +581,7 @@ impl Account {
         trie_factory: &TrieFactory,
         db: &mut HashDB,
     ) -> trie::Result<()> {
-        let mut t = trie_factory.from_existing(db, &mut self.storage_root)?;
+        let mut t = trie_factory.get_from_existing(db, &mut self.storage_root)?;
         for (k, v) in self.storage_changes.drain() {
             // cast key and value to trait type,
             // so we can call overloaded `to_bytes` method
@@ -704,6 +709,7 @@ impl fmt::Debug for Account {
 mod tests {
     use super::*;
     use account_db::*;
+    use cita_db::MemoryDB;
     use rlp::{Compressible, RlpType, UntrustedRlp};
 
     #[test]

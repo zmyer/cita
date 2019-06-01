@@ -39,7 +39,9 @@ use evm::env_info::EnvInfo;
 use evm::{self, Factory, FinalizationResult, Finalize, ReturnData, Schedule};
 pub use executed::{Executed, ExecutionResult};
 use externalities::*;
+use hashable::{Hashable, HASH_EMPTY};
 use libexecutor::economical_model::EconomicalModel;
+use libexecutor::sys_config::BlockSysConfig;
 use state::backend::Backend as StateBackend;
 use state::{State, Substate};
 use std::cmp;
@@ -98,16 +100,6 @@ pub struct TransactOptions {
     pub tracing: bool,
     /// Enable VM tracing.
     pub vm_tracing: bool,
-    /// Check permission before execution.
-    pub check_permission: bool,
-    /// Check account gas limit
-    pub check_quota: bool,
-    /// Check sender's send_tx permission
-    pub check_send_tx_permission: bool,
-    /// Check sender's create_contract permission
-    pub check_create_contract_permission: bool,
-    /// Enable tx fee back to platform
-    pub fee_back_platform: bool,
 }
 
 /// Transaction executor.
@@ -121,6 +113,7 @@ pub struct Executive<'a, B: 'a + StateBackend> {
     native_factory: &'a NativeFactory,
     /// Check EconomicalModel
     economical_model: EconomicalModel,
+    chain_version: u32,
 }
 
 impl<'a, B: 'a + StateBackend> Executive<'a, B> {
@@ -134,6 +127,7 @@ impl<'a, B: 'a + StateBackend> Executive<'a, B> {
         native_factory: &'a NativeFactory,
         static_flag: bool,
         economical_model: EconomicalModel,
+        chain_version: u32,
     ) -> Self {
         Executive {
             state,
@@ -144,6 +138,7 @@ impl<'a, B: 'a + StateBackend> Executive<'a, B> {
             depth: 0,
             static_flag,
             economical_model,
+            chain_version,
         }
     }
 
@@ -162,6 +157,7 @@ impl<'a, B: 'a + StateBackend> Executive<'a, B> {
         parent_depth: usize,
         static_flag: bool,
         economical_model: EconomicalModel,
+        chain_version: u32,
     ) -> Self {
         Executive {
             state,
@@ -172,6 +168,7 @@ impl<'a, B: 'a + StateBackend> Executive<'a, B> {
             depth: parent_depth + 1,
             static_flag,
             economical_model,
+            chain_version,
         }
     }
 
@@ -206,6 +203,7 @@ impl<'a, B: 'a + StateBackend> Executive<'a, B> {
             vm_tracer,
             is_static,
             economical_model,
+            self.chain_version,
         )
     }
 
@@ -214,33 +212,22 @@ impl<'a, B: 'a + StateBackend> Executive<'a, B> {
         &'a mut self,
         t: &SignedTransaction,
         options: TransactOptions,
-        chain_owner: Address,
+        conf: &BlockSysConfig,
     ) -> Result<Executed, ExecutionError> {
         match (options.tracing, options.vm_tracing) {
             (true, true) => self.transact_with_tracer(
                 t,
-                options,
                 ExecutiveTracer::default(),
                 ExecutiveVMTracer::toplevel(),
-                chain_owner,
+                conf,
             ),
-            (true, false) => self.transact_with_tracer(
-                t,
-                options,
-                ExecutiveTracer::default(),
-                NoopVMTracer,
-                chain_owner,
-            ),
-            (false, true) => self.transact_with_tracer(
-                t,
-                options,
-                NoopTracer,
-                ExecutiveVMTracer::toplevel(),
-                chain_owner,
-            ),
-            (false, false) => {
-                self.transact_with_tracer(t, options, NoopTracer, NoopVMTracer, chain_owner)
+            (true, false) => {
+                self.transact_with_tracer(t, ExecutiveTracer::default(), NoopVMTracer, conf)
             }
+            (false, true) => {
+                self.transact_with_tracer(t, NoopTracer, ExecutiveVMTracer::toplevel(), conf)
+            }
+            (false, false) => self.transact_with_tracer(t, NoopTracer, NoopVMTracer, conf),
         }
     }
 
@@ -306,10 +293,9 @@ impl<'a, B: 'a + StateBackend> Executive<'a, B> {
     pub fn transact_with_tracer<T, V>(
         &'a mut self,
         t: &SignedTransaction,
-        options: TransactOptions,
         mut tracer: T,
         mut vm_tracer: V,
-        chain_owner: Address,
+        conf: &BlockSysConfig,
     ) -> Result<Executed, ExecutionError>
     where
         T: Tracer,
@@ -320,13 +306,16 @@ impl<'a, B: 'a + StateBackend> Executive<'a, B> {
 
         self.state.inc_nonce(&sender)?;
 
-        trace!("permission should be check: {}", options.check_permission);
+        trace!(
+            "call contract permission should be check: {}",
+            (*conf).check_options.call_permission
+        );
 
         check_permission(
-            &self.state.group_accounts,
-            &self.state.account_permissions,
+            &conf.group_accounts,
+            &conf.account_permissions,
             t,
-            options,
+            conf.check_options,
         )?;
 
         let schedule = Schedule::new_v1();
@@ -345,7 +334,7 @@ impl<'a, B: 'a + StateBackend> Executive<'a, B> {
         }
 
         if t.action == Action::AmendData {
-            if let Some(admin) = self.state.super_admin_account {
+            if let Some(admin) = conf.super_admin_account {
                 if *t.sender() != admin {
                     return Err(ExecutionError::NoTransactionPermission);
                 }
@@ -353,16 +342,6 @@ impl<'a, B: 'a + StateBackend> Executive<'a, B> {
                 return Err(ExecutionError::NoTransactionPermission);
             }
         }
-
-        /*trace!("quota should be checked: {}", options.check_quota);
-        if options.check_quota {
-            check_quota(
-                self.info.gas_used,
-                self.info.gas_limit,
-                self.info.account_gas_limit,
-                t,
-            )?;
-        }*/
 
         if t.action == Action::AbiStore && !self.transact_set_abi(&t.data) {
             return Err(ExecutionError::TransactionMalformed(
@@ -518,8 +497,8 @@ impl<'a, B: 'a + StateBackend> Executive<'a, B> {
             output,
             tracer.traces(),
             vm_tracer.drain(),
-            chain_owner,
-            options.fee_back_platform,
+            (*conf).chain_owner,
+            (*conf).check_options.fee_back_platform,
         )?)
     }
 
@@ -776,9 +755,9 @@ impl<'a, B: 'a + StateBackend> Executive<'a, B> {
 
         let response = if is_create {
             service_registry::enable_contract(address);
-            create_grpc_contract(self.info, &params, self.state, true, true, &connect_info)
+            create_grpc_contract(self.info, &params, self.state, true, &connect_info)
         } else {
-            invoke_grpc_contract(self.info, &params, self.state, true, true, &connect_info)
+            invoke_grpc_contract(self.info, &params, self.state, true, &connect_info)
         };
         match response {
             Ok(invoke_response) => {
@@ -1016,8 +995,6 @@ impl<'a, B: 'a + StateBackend> Executive<'a, B> {
         let mut unconfirmed_substate = Substate::new();
 
         // create contract and transfer value to it if necessary
-        /*let schedule = self.engine.schedule(self.info);
-        let nonce_offset = if schedule.no_empty {1} else {0}.into();*/
         let nonce_offset = U256::from(0);
         let prev_bal = self.state.balance(&params.address)?;
         // TODO Keep it for compatibility. Remove it later.
@@ -1082,9 +1059,6 @@ impl<'a, B: 'a + StateBackend> Executive<'a, B> {
         chain_owner: Address,
         fee_back_platform: bool,
     ) -> ExecutionResult {
-        /*
-        let schedule = self.engine.schedule(self.info);
-         */
         let schedule = Schedule::new_v1();
         // refunds from SSTORE nonzero -> zero
         let sstore_refunds = U256::from(schedule.sstore_refund_gas) * substate.sstore_clears_count;
@@ -1236,7 +1210,7 @@ impl<'a, B: 'a + StateBackend> Executive<'a, B> {
 
 #[cfg(test)]
 mod tests {
-    extern crate logger;
+    extern crate cita_logger as logger;
     extern crate rustc_hex;
     ////////////////////////////////////////////////////////////////////////////////
 
@@ -1249,6 +1223,7 @@ mod tests {
     use evm::env_info::EnvInfo;
     use evm::Schedule;
     use evm::{Factory, VMType};
+    use libexecutor::sys_config::BlockSysConfig;
     use state::Substate;
     use std::ops::Deref;
     use std::str::FromStr;
@@ -1271,7 +1246,7 @@ mod tests {
             nonce: U256::zero().to_string(),
             block_limit: 100u64,
             chain_id: 1.into(),
-            version: 1,
+            version: 2,
         }
         .fake_sign(keypair.address().clone());
         let sender = t.sender();
@@ -1295,17 +1270,13 @@ mod tests {
                 &native_factory,
                 false,
                 EconomicalModel::Charge,
+                0,
             );
             let opts = TransactOptions {
                 tracing: false,
                 vm_tracing: false,
-                check_permission: false,
-                check_quota: true,
-                check_send_tx_permission: false,
-                check_create_contract_permission: false,
-                fee_back_platform: false,
             };
-            ex.transact(&t, opts, Address::from(0))
+            ex.transact(&t, opts, &BlockSysConfig::default())
         };
 
         let schedule = Schedule::new_v1();
@@ -1334,7 +1305,7 @@ mod tests {
             nonce: U256::zero().to_string(),
             block_limit: 100u64,
             chain_id: 1.into(),
-            version: 1,
+            version: 2,
         }
         .fake_sign(keypair.address().clone());
         let sender = t.sender();
@@ -1349,6 +1320,7 @@ mod tests {
             .unwrap();
         let mut info = EnvInfo::default();
         info.gas_limit = U256::from(100_000);
+        let conf = BlockSysConfig::default();
 
         let executed = {
             let mut ex = Executive::new(
@@ -1359,17 +1331,13 @@ mod tests {
                 &native_factory,
                 false,
                 EconomicalModel::Charge,
+                conf.chain_version,
             );
             let opts = TransactOptions {
                 tracing: false,
                 vm_tracing: false,
-                check_permission: false,
-                check_quota: true,
-                check_send_tx_permission: false,
-                check_create_contract_permission: false,
-                fee_back_platform: false,
             };
-            ex.transact(&t, opts, Address::from(0)).unwrap()
+            ex.transact(&t, opts, &conf).unwrap()
         };
 
         let schedule = Schedule::new_v1();
@@ -1401,7 +1369,7 @@ mod tests {
             nonce: U256::zero().to_string(),
             block_limit: 100u64,
             chain_id: 1.into(),
-            version: 1,
+            version: 2,
         }
         .fake_sign(keypair.address().clone());
 
@@ -1412,6 +1380,7 @@ mod tests {
         state.add_balance(t.sender(), &U256::from(100_042)).unwrap();
         let mut info = EnvInfo::default();
         info.gas_limit = U256::from(100_000);
+        let conf = BlockSysConfig::default();
 
         let result = {
             let mut ex = Executive::new(
@@ -1422,17 +1391,13 @@ mod tests {
                 &native_factory,
                 false,
                 EconomicalModel::Charge,
+                conf.chain_version,
             );
             let opts = TransactOptions {
                 tracing: false,
                 vm_tracing: false,
-                check_permission: false,
-                check_quota: true,
-                check_send_tx_permission: false,
-                check_create_contract_permission: false,
-                fee_back_platform: false,
             };
-            ex.transact(&t, opts, Address::from(0))
+            ex.transact(&t, opts, &conf)
         };
 
         match result {
@@ -1457,7 +1422,7 @@ mod tests {
             nonce: U256::zero().to_string(),
             block_limit: 100u64,
             chain_id: 1.into(),
-            version: 1,
+            version: 2,
         }
         .fake_sign(keypair.address().clone());
 
@@ -1467,6 +1432,7 @@ mod tests {
         let mut state = get_temp_state();
         let mut info = EnvInfo::default();
         info.gas_limit = U256::from(100_000);
+        let conf = BlockSysConfig::default();
 
         let result = {
             let mut ex = Executive::new(
@@ -1477,17 +1443,13 @@ mod tests {
                 &native_factory,
                 false,
                 EconomicalModel::Quota,
+                conf.chain_version,
             );
             let opts = TransactOptions {
                 tracing: false,
                 vm_tracing: false,
-                check_permission: false,
-                check_quota: true,
-                check_send_tx_permission: false,
-                check_create_contract_permission: false,
-                fee_back_platform: false,
             };
-            ex.transact(&t, opts, Address::from(0))
+            ex.transact(&t, opts, &conf)
         };
 
         assert!(result.is_ok());
@@ -1531,6 +1493,7 @@ contract HelloWorld {
         let mut substate = Substate::new();
         let mut tracer = ExecutiveTracer::default();
         let mut vm_tracer = ExecutiveVMTracer::toplevel();
+        let conf = BlockSysConfig::default();
 
         let mut ex = Executive::new(
             &mut state,
@@ -1540,6 +1503,7 @@ contract HelloWorld {
             &native_factory,
             false,
             EconomicalModel::Quota,
+            conf.chain_version,
         );
         let res = ex.create(&params, &mut substate, &mut tracer, &mut vm_tracer);
         assert!(res.is_err());
@@ -1585,6 +1549,7 @@ contract AbiTest {
         let mut substate = Substate::new();
         let mut tracer = ExecutiveTracer::default();
         let mut vm_tracer = ExecutiveVMTracer::toplevel();
+        let conf = BlockSysConfig::default();
 
         {
             let mut ex = Executive::new(
@@ -1595,6 +1560,7 @@ contract AbiTest {
                 &native_factory,
                 false,
                 EconomicalModel::Quota,
+                conf.chain_version,
             );
             let _ = ex.create(&params, &mut substate, &mut tracer, &mut vm_tracer);
         }
@@ -1648,6 +1614,8 @@ contract AbiTest {
         let info = EnvInfo::default();
         let engine = NullEngine::default();
         let mut substate = Substate::new();
+        let conf = BlockSysConfig::default();
+
         {
             let mut ex = Executive::new(
                 &mut state,
@@ -1657,6 +1625,7 @@ contract AbiTest {
                 &native_factory,
                 false,
                 EconomicalModel::Quota,
+                conf.chain_version,
             );
             let mut out = vec![];
             let _ = ex.call(
@@ -1726,6 +1695,8 @@ contract AbiTest {
         let info = EnvInfo::default();
         let engine = NullEngine::default();
         let mut substate = Substate::new();
+        let conf = BlockSysConfig::default();
+
         {
             let mut ex = Executive::new(
                 &mut state,
@@ -1735,6 +1706,7 @@ contract AbiTest {
                 &native_factory,
                 false,
                 EconomicalModel::Quota,
+                conf.chain_version,
             );
             let mut out = vec![];
             let res = ex.call(
@@ -1809,6 +1781,8 @@ contract AbiTest {
         let info = EnvInfo::default();
         let engine = NullEngine::default();
         let mut substate = Substate::new();
+        let conf = BlockSysConfig::default();
+
         {
             let mut ex = Executive::new(
                 &mut state,
@@ -1818,6 +1792,7 @@ contract AbiTest {
                 &native_factory,
                 false,
                 EconomicalModel::Quota,
+                conf.chain_version,
             );
             let mut out = vec![];
             let res = ex.call(
@@ -1908,6 +1883,8 @@ contract FakePermissionManagement {
         let info = EnvInfo::default();
         let engine = NullEngine::default();
         let mut substate = Substate::new();
+        let conf = BlockSysConfig::default();
+
         {
             let mut ex = Executive::new(
                 &mut state,
@@ -1917,6 +1894,7 @@ contract FakePermissionManagement {
                 &native_factory,
                 false,
                 EconomicalModel::Quota,
+                conf.chain_version,
             );
             let mut out = vec![];
             let res = ex.call(

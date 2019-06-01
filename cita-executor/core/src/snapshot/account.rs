@@ -17,14 +17,15 @@
 //! Account state encoding and decoding
 
 use account_db::{AccountDB, AccountDBMut};
+use cita_db::hashdb::HashDB;
+use cita_db::{Trie, TrieDB, TrieDBMut, TrieMut};
 use cita_types::{Address, H256, U256};
+use hashable::{HASH_EMPTY, HASH_NULL_RLP};
 use rlp::{RlpStream, UntrustedRlp};
 use snapshot::Error;
 use std::collections::HashSet;
 use types::basic_account::BasicAccount;
-use util::hashdb::HashDB;
-use util::{Bytes, Trie, TrieDB, TrieDBMut, TrieMut};
-use util::{HASH_EMPTY, HASH_NULL_RLP};
+use util::Bytes;
 
 // An empty account -- these were replaced with RLP null data for a space optimization in v1.
 const ACC_EMPTY: BasicAccount = BasicAccount {
@@ -74,7 +75,7 @@ pub fn to_fat_rlps(
     first_chunk_size: usize,
     max_chunk_size: usize,
 ) -> Result<Vec<Bytes>, Error> {
-    let db = TrieDB::new(acct_db, &acc.storage_root).unwrap();
+    let db = TrieDB::create(acct_db, &acc.storage_root).unwrap();
     let mut chunks = Vec::new();
     let mut db_iter = db.iter().map_err(|err| *err)?;
     let mut target_chunk_size = first_chunk_size;
@@ -132,7 +133,7 @@ pub fn to_fat_rlps(
         }
 
         account_stream.begin_unbounded_list();
-        if account_stream.len() > target_chunk_size {
+        if account_stream.size() > target_chunk_size {
             // account does not fit, push an empty record to mark a new chunk
             target_chunk_size = max_chunk_size;
             chunks.push(Vec::new());

@@ -16,9 +16,10 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use libproto::router::{MsgType, RoutingKey, SubModules};
+use libproto::TryInto;
 use libproto::{BatchRequest, Message, Request};
-use std::convert::{Into, TryInto};
-use std::sync::mpsc::{Receiver, Sender};
+use pubsub::channel::{Receiver, Sender};
+use std::convert::Into;
 use std::thread;
 use std::time::Duration;
 use util::instrument::{unix_now, AsMillis};
@@ -64,7 +65,9 @@ impl BatchForward {
             } else {
                 thread::sleep(Duration::new(0, self.check_duration * 1_000_000));
                 let now = AsMillis::as_millis(&unix_now());
-                if (now - self.last_timestamp) > self.timeout && !self.request_buffer.is_empty() {
+                if now.saturating_sub(self.last_timestamp) > self.timeout
+                    && !self.request_buffer.is_empty()
+                {
                     self.batch_forward();
                 }
             }

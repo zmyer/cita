@@ -11,35 +11,24 @@ services:
 git:
   depth: 1
 stages:
-  - Format
-  - UnitTest
+  - CheckShell
   - Release
   - IntegrateTest
 before_install:
-  - docker pull cita/cita-build:ubuntu-18.04-20181009
+  - docker pull cita/cita-build:ubuntu-18.04-20190515
 jobs:
   include:
 
-    - stage: Format
-      before_script:
-        - cd $TRAVIS_BUILD_DIR
-      script: ./env.sh make fmt
+    - stage: CheckShell
+      script:
+        # Fail if any of these files have warnings
+        - shellcheck scripts/*.sh env.sh
 
-    - &stage-unit-test
-      stage: UnitTest
-      env: HASH_ALGO=sha3hash    CRYPTO_ALGO=secp256k1
-      before_script:
-        - cd $TRAVIS_BUILD_DIR
-        - ./scripts/replace_default_feature.sh ./ sha3hash  ${HASH_ALGO}
-        - ./scripts/replace_default_feature.sh ./ secp256k1 ${CRYPTO_ALGO}
-      script: ./env.sh make test
-    - <<: *stage-unit-test
-      env: HASH_ALGO=blake2bhash CRYPTO_ALGO=ed25519
-    - <<: *stage-unit-test
-      env: HASH_ALGO=sm3hash     CRYPTO_ALGO=sm2
-
-    - &stage-release
-      stage: Release
+    - stage: Release
+      name: Release for Integrate Test
+      language: node_js
+      node_js:
+        - lts/*
       cache:
         directories:
           - $TRAVIS_BUILD_DIR/target/release-cache
@@ -53,18 +42,13 @@ jobs:
         - cd $TRAVIS_BUILD_DIR
         - rm -rf target/release-cache
         - mv -vf target/install target/release-cache
-    - <<: *stage-release
-      env: HASH_ALGO=blake2bhash CRYPTO_ALGO=ed25519
-    - <<: *stage-release
-      env: HASH_ALGO=sm3hash     CRYPTO_ALGO=sm2
 
-    - <<: *stage-release
+    - &stage-contract-test-sha3-secp256k1
+      stage: IntegrateTest
+      name: Unit Group
       language: node_js
       node_js:
         - lts/*
-
-    - &stage-integrate-test-sha3-secp256k1
-      stage: IntegrateTest
       cache:
         directories:
           - $TRAVIS_BUILD_DIR/target/release-cache
@@ -73,54 +57,14 @@ jobs:
         - cd $TRAVIS_BUILD_DIR
         - rm -rf target/install
         - cp -rv target/release-cache target/install
-      script: ./env.sh ./tests/integrate_test/cita_basic.sh
-    - &stage-integrate-test-blake2b-ed25519
-      <<: *stage-integrate-test-sha3-secp256k1
-      env: HASH_ALGO=blake2bhash CRYPTO_ALGO=ed25519
-      script: ./env.sh ./tests/integrate_test/cita_basic.sh
-    - &stage-integrate-test-sm3-sm2
-      <<: *stage-integrate-test-sha3-secp256k1
-      env: HASH_ALGO=sm3hash     CRYPTO_ALGO=sm2
-      script: ./env.sh ./tests/integrate_test/cita_basic.sh
-    - <<: *stage-integrate-test-sha3-secp256k1
-      script: ./env.sh ./tests/integrate_test/cita_byzantinetest.sh quota
-    - <<: *stage-integrate-test-blake2b-ed25519
-      script: ./env.sh ./tests/integrate_test/cita_byzantinetest.sh quota
-    - <<: *stage-integrate-test-sm3-sm2
-      script: ./env.sh ./tests/integrate_test/cita_byzantinetest.sh quota
-    - <<: *stage-integrate-test-sha3-secp256k1
-      script: ./env.sh ./tests/integrate_test/cita_byzantinetest.sh charge
-    - <<: *stage-integrate-test-blake2b-ed25519
-      script: ./env.sh ./tests/integrate_test/cita_byzantinetest.sh charge
-    - <<: *stage-integrate-test-sm3-sm2
-      script: ./env.sh ./tests/integrate_test/cita_byzantinetest.sh charge
-
-    - <<: *stage-integrate-test-sha3-secp256k1
-      name: Basic Integrate Test with TLS support
-      script: ./env.sh ./tests/integrate_test/cita_tls_basic.sh
-      name: JSONRPC Schema Mock Test (Quota)
-      script: ./env.sh ./tests/integrate_test/cita_jsonrpc_schema_mock.sh quota
-    - <<: *stage-integrate-test-sha3-secp256k1
-      name: Transfer Value Test (Charge)
-      script: ./env.sh ./tests/integrate_test/cita_charge_mode.sh
-    - <<: *stage-integrate-test-sha3-secp256k1
-      name: Crosschain Test
-      script: ./env.sh ./tests/integrate_test/cita_crosschain.sh
-
-    - &stage-contract-test-sha3-secp256k1
-      <<: *stage-integrate-test-sha3-secp256k1
-      language: node_js
-      node_js:
-        - lts/*
       install:
         - rm -rf /opt/cita-run/test-chain
         - cd $TRAVIS_BUILD_DIR/target/install
-        - ./env.sh ./scripts/create_cita_config.py create
+        - ./bin/cita create
             --nodes "127.0.0.1:4100"
             --super_admin "0x4b5ae4567ad5d9fb92bc9afd6a657e6fa13a2523"
-            --contract_arguments "VersionManager.version=0"
-        - ./env.sh ./bin/cita setup test-chain/0
-        - ./daemon.sh ./bin/cita start test-chain/0
+        - ./bin/cita setup test-chain/0
+        - ./bin/cita start test-chain/0
       before_script:
         - cd $TRAVIS_BUILD_DIR/target/install/scripts/contracts/tests
         - travis_retry yarn install
@@ -166,13 +110,12 @@ jobs:
       name: Unit Node
       install:
         - cd $TRAVIS_BUILD_DIR/target/install
-        - ./env.sh ./scripts/create_cita_config.py create
+        - ./bin/cita create
             --nodes "127.0.0.1:4000,127.0.0.1:4001,127.0.0.1:4002"
             --super_admin "0x4b5ae4567ad5d9fb92bc9afd6a657e6fa13a2523"
-            --contract_arguments "VersionManager.version=0"
         - for i in {0..2} ; do
-             ./env.sh bin/cita setup test-chain/$i
-             && ./daemon.sh bin/cita start test-chain/$i ;
+             ./bin/cita setup test-chain/$i
+             && ./bin/cita start test-chain/$i ;
           done
       script:
         - npm run-script unit_node
@@ -181,13 +124,12 @@ jobs:
       name: Integrate Quota
       install:
         - cd $TRAVIS_BUILD_DIR/target/install
-        - ./env.sh ./scripts/create_cita_config.py create
+        - ./bin/cita create
             --nodes "127.0.0.1:4100"
             --contract_arguments "SysConfig.checkQuota=true"
-            --contract_arguments "VersionManager.version=0"
             --super_admin "0x4b5ae4567ad5d9fb92bc9afd6a657e6fa13a2523"
-        - ./env.sh ./bin/cita setup test-chain/0
-        - ./daemon.sh ./bin/cita start test-chain/0
+        - ./bin/cita setup test-chain/0
+        - ./bin/cita start test-chain/0
       script:
         - npm run-script integrate_quota
 
@@ -195,13 +137,12 @@ jobs:
       name: Integrate Permission
       install:
         - cd $TRAVIS_BUILD_DIR/target/install
-        - ./env.sh ./scripts/create_cita_config.py create
+        - ./bin/cita create
             --nodes "127.0.0.1:4100"
-            --contract_arguments "SysConfig.checkPermission=true"
-            --contract_arguments "VersionManager.version=0"
+            --contract_arguments "SysConfig.checkCallPermission=true"
             --super_admin "0x4b5ae4567ad5d9fb92bc9afd6a657e6fa13a2523"
-        - ./env.sh ./bin/cita setup test-chain/0
-        - ./daemon.sh ./bin/cita start test-chain/0
+        - ./bin/cita setup test-chain/0
+        - ./bin/cita start test-chain/0
       script:
         - npm run-script permission
 
@@ -209,12 +150,25 @@ jobs:
       name: Integrate AutoExec
       install:
         - cd $TRAVIS_BUILD_DIR/target/install
-        - ./env.sh ./scripts/create_cita_config.py create
+        - ./bin/cita create
             --nodes "127.0.0.1:4100"
-            --contract_arguments "VersionManager.version=0"
             --contract_arguments "SysConfig.autoExec=true"
             --super_admin "0x4b5ae4567ad5d9fb92bc9afd6a657e6fa13a2523"
-        - ./env.sh ./bin/cita setup test-chain/0
-        - ./daemon.sh ./bin/cita start test-chain/0
+        - ./bin/cita setup test-chain/0
+        - ./bin/cita start test-chain/0
       script:
         - npm run-script auto_exec
+
+    - <<: *stage-contract-test-sha3-secp256k1
+      name: Integrate Lifetime
+      install:
+        - cd $TRAVIS_BUILD_DIR/target/install
+        - ./bin/cita create
+            --nodes "127.0.0.1:4100"
+            --contract_arguments "SysConfig.economicalModel=1 PriceManager.quotaPrice=1"
+            --super_admin "0x4b5ae4567ad5d9fb92bc9afd6a657e6fa13a2523"
+            --init_token 0x1000000
+        - ./bin/cita setup test-chain/0
+        - ./bin/cita start test-chain/0
+      script:
+        - npm run-script lifetime

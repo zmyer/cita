@@ -1,5 +1,5 @@
 // CITA
-// Copyright 2016-2017 Cryptape Technologies LLC.
+// Copyright 2016-2019 Cryptape Technologies LLC.
 
 // This program is free software: you can redistribute it
 // and/or modify it under the terms of the GNU General Public
@@ -15,25 +15,20 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-#![feature(try_from)]
-#![feature(tool_lints)]
-
 extern crate bincode;
 extern crate cita_crypto as crypto;
 extern crate cita_types;
 extern crate clap;
-extern crate common_types;
-extern crate core;
 extern crate cpuprofiler;
 extern crate dotenv;
 #[macro_use]
 extern crate libproto;
+extern crate hashable;
 extern crate proof;
 extern crate rustc_serialize;
-extern crate util;
 
 #[macro_use]
-extern crate logger;
+extern crate cita_logger as logger;
 extern crate pubsub;
 #[macro_use]
 extern crate serde_derive;
@@ -46,11 +41,13 @@ use crypto::*;
 use generate_block::Generateblock;
 use libproto::router::{MsgType, RoutingKey, SubModules};
 use libproto::Message;
+use libproto::TryFrom;
+use pubsub::channel::{self, Sender};
 use pubsub::start_pubsub;
-use std::convert::TryFrom;
-use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::time;
+
+pub const STORE_ADDRESS: &str = "ffffffffffffffffffffffffffffffffff010000";
 
 pub type PubType = (String, Vec<u8>);
 
@@ -87,7 +84,7 @@ fn create_contract(
 
     let contract_address = match flag {
         1 => "",
-        0 => common_types::reserved_addresses::STORE_ADDRESS,
+        0 => STORE_ADDRESS,
         _ => "0000000000000000000000000000000082720029",
     };
     let mut txs = Vec::new();
@@ -124,7 +121,7 @@ fn create_contract(
 }
 
 fn main() {
-    logger::init_config("chain_performance_by_mq");
+    logger::init_config(&logger::LogFavour::File("chain_performance_by_mq"));
     info!("CITA:Chain Performance by MQ");
 
     let matches = App::new("Chain Performance by MQ")
@@ -170,8 +167,8 @@ fn main() {
 
     let mut send_flag = true;
     let mut height = 0;
-    let (tx_sub, rx_sub) = channel();
-    let (tx_pub, rx_pub) = channel();
+    let (tx_sub, rx_sub) = channel::unbounded();
+    let (tx_pub, rx_pub) = channel::unbounded();
     let keypair = KeyPair::gen_keypair();
     let pk = keypair.privkey();
 
@@ -238,5 +235,18 @@ fn main() {
                 send_flag = false;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    extern crate common_types;
+
+    #[test]
+    fn test_used_store_address() {
+        assert_eq!(
+            common_types::reserved_addresses::STORE_ADDRESS,
+            super::STORE_ADDRESS
+        );
     }
 }

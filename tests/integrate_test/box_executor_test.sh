@@ -14,7 +14,7 @@ else
     SOURCE_DIR=$(readlink -f $(dirname $0)/../..)
 fi
 BINARY_DIR=${SOURCE_DIR}/target/install
-TESTS_DIR=${SOURCE_DIR}/tests/interfaces/rpc/tests
+TESTS_DIR=${SOURCE_DIR}/tests/jsondata/rpc/tests
 CHAIN_NAME="mock-chain"
 NODE_NAME="${CHAIN_NAME}/0"
 NODE_DIR="${BINARY_DIR}/${NODE_NAME}"
@@ -27,17 +27,12 @@ cd ${BINARY_DIR}
 echo "DONE"
 
 ################################################################################
-echo -n "1) cleanup   ...  "
-cleanup ${CHAIN_NAME}
-echo -n "DONE"
-
-################################################################################
-echo -n "2) generate config  ...  "
+echo -n "1) generate config  ...  "
 if [ ! -d "resource" ]; then
     mkdir resource
 fi
 
-AUTHORITIES=`cat ${SOURCE_DIR}/tests/interfaces/rpc/config/authorities | xargs echo |sed "s/ /,/g"`
+AUTHORITIES=`cat ${SOURCE_DIR}/tests/interfaces/config/authorities | xargs echo |sed "s/ /,/g"`
 ${BINARY_DIR}/scripts/create_cita_config.py create \
              --nodes "127.0.0.1:4000,127.0.0.1:4001,127.0.0.1:4002,127.0.0.1:4003" \
              --chain_name ${CHAIN_NAME} \
@@ -49,7 +44,7 @@ ${BINARY_DIR}/scripts/create_cita_config.py create \
 echo -n "DONE"
 
 ################################################################################
-echo -n "3) start cita-chain and cita-executor on ${NODE_NAME} ...  "
+echo -n "2) start cita-chain and cita-executor on ${NODE_NAME} ...  "
 ${BINARY_DIR}/bin/cita setup ${NODE_NAME}
 
 curl -i -u guest:guest -H content-type:application/json -XDELETE \
@@ -63,16 +58,8 @@ executor_pid=$!
 echo -n "DONE"
 
 ##  ################################################################################
-echo -n "4) testing ...  "
+echo -n "3) testing ...  "
 AMQP_URL=amqp://guest:guest@localhost/${NODE_NAME} \
     timeout 100s ${BINARY_DIR}/bin/box_executor \
-    -m ${SOURCE_DIR}/tests/interfaces/rpc/config/blockchain.yaml
+    -m ${SOURCE_DIR}/tests/interfaces/config/blockchain.yaml
 echo -n "DONE"
-
-################################################################################
-echo -n "5) stop cita-chain and cita-executor on ${NODE_NAME}"
-kill "${chain_pid}"
-kill "${executor_pid}"
-cleanup ${CHAIN_NAME}
-echo -n "PASS"
-exit 0

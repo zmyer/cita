@@ -1,5 +1,5 @@
 // CITA
-// Copyright 2016-2018 Cryptape Technologies LLC.
+// Copyright 2016-2019 Cryptape Technologies LLC.
 
 // This program is free software: you can redistribute it
 // and/or modify it under the terms of the GNU General Public
@@ -76,7 +76,7 @@ impl<'a> UserManagement<'a> {
     }
 
     pub fn default_all_groups() -> Vec<Address> {
-        error!("Use default all groups.");
+        info!("Use default all groups.");
         Vec::new()
     }
 
@@ -89,14 +89,14 @@ impl<'a> UserManagement<'a> {
     }
 
     pub fn default_accounts() -> Vec<Address> {
-        error!("Use default accounts.");
+        info!("Use default accounts.");
         Vec::new()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    extern crate logger;
+    extern crate cita_logger as logger;
 
     use super::UserManagement;
     use cita_types::{Address, H160};

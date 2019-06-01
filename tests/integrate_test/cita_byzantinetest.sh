@@ -21,13 +21,8 @@ cd ${BINARY_DIR}
 echo "DONE"
 
 ################################################################################
-echo -n "1) cleanup   ...  "
-cleanup
-echo "DONE"
 
-################################################################################
-
-echo -n "2) generate config  ...  "
+echo -n "1) generate config  ...  "
 ./scripts/create_cita_config.py create \
     --chain_name "node" \
     --super_admin "0x4b5ae4567ad5d9fb92bc9afd6a657e6fa13a2523" \
@@ -37,24 +32,24 @@ echo -n "2) generate config  ...  "
 echo "DONE"
 
 ################################################################################
-echo -n "3) start nodes  ...  "
+echo -n "2) start nodes  ...  "
 for i in {0..3} ; do
-    bin/cita setup node/$i  > /dev/null
+    bin/cita bebop setup node/$i  > /dev/null
 done
 for i in {0..3} ; do
-    bin/cita start node/$i debug > /dev/null &
+    bin/cita bebop start node/$i debug > /dev/null &
 done
 echo "DONE"
 
 ################################################################################
-echo -n "4) check alive  ...  "
+echo -n "3) check alive  ...  "
 timeout=$(check_height_growth_normal 0 60) || (echo "FAILED"
                                               echo "failed to check_height_growth 0: ${timeout}"
                                               exit 1)
 echo "${timeout}s DONE"
 
 ################################################################################
-echo "5) set delay at one nodes, , output time used for produce block growth"
+echo "4) set delay at one nodes, , output time used for produce block growth"
 delay=10000
 for i in {0..3}; do
     id=$(($i%4))
@@ -63,7 +58,7 @@ for i in {0..3}; do
     port=$((4000+${id}))
     set_delay_at_port ${port} ${delay}
     timeout1=$(check_height_growth_normal ${refer} 60) ||(echo "FAILED"
-                                                         echo "failed to check_height_growth: ${timeout}"
+                                                         echo "failed to check_height_growth: ${timeout1}"
                                                          exit 1)
     unset_delay_at_port ${port}
     #synch for node ${id}
@@ -74,7 +69,7 @@ for i in {0..3}; do
 done
 
 ################################################################################
-echo "6) set delay at two nodes, output time used for produce block"
+echo "5) set delay at two nodes, output time used for produce block"
 delay=3000
 for i in {0..3}; do
     id1=$i
@@ -85,7 +80,7 @@ for i in {0..3}; do
     set_delay_at_port $((4000+${id2})) ${delay}
 
     timeout1=$(check_height_growth_normal ${refer} 100) ||(echo "FAILED"
-                                                          echo "failed to check_height_growth ${refer}: ${timeout}"
+                                                          echo "failed to check_height_growth ${refer}: ${timeout1}"
                                                           exit 1)
     unset_delay_at_port $((4000+${id1}))
     unset_delay_at_port $((4000+${id2}))
@@ -104,7 +99,7 @@ for i in {0..3}; do
 done
 
 ################################################################################
-echo "7) set delay at all nodes, output time used for produce block"
+echo "6) set delay at all nodes, output time used for produce block"
 for i in {0..6}; do
     delay=$((i*400))
     timeout=$(check_height_growth_normal 0 60) ||(echo "FAILED"
@@ -123,10 +118,3 @@ for i in {0..6}; do
     sleep 4
     echo "${timeout}s DONE"
 done
-
-echo "DONE"
-
-echo "11) cleanup"
-cleanup
-echo "DONE"
-exit 0

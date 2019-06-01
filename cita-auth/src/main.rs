@@ -1,5 +1,5 @@
 // CITA
-// Copyright 2016-2017 Cryptape Technologies LLC.
+// Copyright 2016-2019 Cryptape Technologies LLC.
 
 // This program is free software: you can redistribute it
 // and/or modify it under the terms of the GNU General Public
@@ -26,7 +26,7 @@
 //! 1. Subscribe channel
 //!
 //!     | Queue | PubModule | Message Type      |
-//!     | ----- | --------- | ----------------- |
+//!     | ----- | --------- | ------------------|
 //!     | auth  | Consensus | VerifyBlockReq    |
 //!     | auth  | Chain     | BlockTxHashes     |
 //!     | auth  | Executor  | BlackList         |
@@ -39,17 +39,17 @@
 //!
 //! 2. Publish channel
 //!
-//!     | Queue | PubModule | SubModule | Message Type      |
-//!     | ----- | --------- | --------- | ----------------- |
-//!     | auth  | Auth      | Chain     | BlockTxHashesReq  |
-//!     | auth  | Auth      | Consensus | VerifyBlockResp   |
-//!     | auth  | Auth      | Jsonrpc   | Response          |
-//!     | auth  | Auth      | Net       | Request           |
-//!     | auth  | Auth      | Consensus | BlockTxs          |
-//!     | auth  | Auth      | Snapshot  | SnapshotResp      |
-//!     | auth  | Auth      | Executor  | MiscellaneousReq  |
-//!     | auth  | Auth      | Net       | GetBlockTxn       |
-//!     | auth  | Auth      | Net       | BlockTxn          |
+//!     | Queue | PubModule | SubModule | Message Type     |
+//!     | ----- | --------- | --------- | ---------------- |
+//!     | auth  | Auth      | Chain     | BlockTxHashesReq |
+//!     | auth  | Auth      | Consensus | VerifyBlockResp  |
+//!     | auth  | Auth      | Jsonrpc   | Response         |
+//!     | auth  | Auth      | Net       | Request          |
+//!     | auth  | Auth      | Consensus | BlockTxs         |
+//!     | auth  | Auth      | Snapshot  | SnapshotResp     |
+//!     | auth  | Auth      | Executor  | MiscellaneousReq |
+//!     | auth  | Auth      | Net       | GetBlockTxn      |
+//!     | auth  | Auth      | Net       | BlockTxn         |
 //!
 //! ### Key behavior
 //!
@@ -68,12 +68,8 @@
 //! [`handle module`]: ./handler/index.html
 //!
 
-#![feature(custom_attribute)]
-#![feature(integer_atomics)]
-#![feature(try_from)]
-#![feature(tool_lints)]
-
 extern crate cita_crypto as crypto;
+extern crate cita_directories;
 extern crate cita_types;
 extern crate clap;
 extern crate core as chain_core;
@@ -84,9 +80,12 @@ extern crate jsonrpc_types;
 #[macro_use]
 extern crate libproto;
 #[macro_use]
-extern crate logger;
+extern crate cita_logger as logger;
 extern crate lru;
 extern crate pubsub;
+#[cfg(test)]
+#[macro_use]
+extern crate quickcheck;
 extern crate rayon;
 #[macro_use]
 extern crate serde_derive;
@@ -96,7 +95,21 @@ extern crate tempfile;
 extern crate tx_pool;
 #[macro_use]
 extern crate util;
+extern crate db as cita_db;
+extern crate hashable;
 extern crate uuid;
+
+use batch_forward::BatchForward;
+use clap::App;
+use config::Config;
+use cpuprofiler::PROFILER;
+use dispatcher::Dispatcher;
+use handler::MsgHandler;
+use libproto::router::{MsgType, RoutingKey, SubModules};
+use pubsub::channel;
+use pubsub::start_pubsub;
+use std::thread;
+use util::set_panic_handler;
 
 pub mod batch_forward;
 pub mod block_txn;
@@ -105,18 +118,8 @@ pub mod config;
 pub mod dispatcher;
 pub mod handler;
 pub mod history;
+mod transaction_verify;
 pub mod txwal;
-use batch_forward::BatchForward;
-use clap::App;
-use config::Config;
-use cpuprofiler::PROFILER;
-use dispatcher::Dispatcher;
-use handler::MsgHandler;
-use libproto::router::{MsgType, RoutingKey, SubModules};
-use pubsub::start_pubsub;
-use std::sync::mpsc::channel;
-use std::thread;
-use util::set_panic_handler;
 
 include!(concat!(env!("OUT_DIR"), "/build_info.rs"));
 
@@ -139,18 +142,23 @@ fn profiler(flag_prof_start: u64, flag_prof_duration: u64) {
 }
 
 fn main() {
-    micro_service_init!("cita-auth", "CITA:auth");
-    info!("Version: {}", get_build_info_str(true));
-
     // init app
     let matches = App::new("auth")
         .version(get_build_info_str(true))
         .long_version(get_build_info_str(false))
         .author("Cryptape")
         .about("CITA Block Chain Node powered by Rust")
-        .args_from_usage("-c, --config=[FILE] 'Sets a custom config file'")
+        .args_from_usage(
+            "-c, --config=[FILE] 'Sets a custom config file'
+                          -s, --stdout 'Log to console'",
+        )
         .get_matches();
-    let config_path = matches.value_of("config").unwrap_or("config");
+
+    let stdout = matches.is_present("stdout");
+    micro_service_init!("cita-auth", "CITA:auth", stdout);
+    info!("Version: {}", get_build_info_str(true));
+
+    let config_path = matches.value_of("config").unwrap_or("auth.toml");
 
     let config = Config::new(config_path);
 
@@ -171,8 +179,8 @@ fn main() {
     // which we called micro-service at their running time.
     // All micro-services connect to a MQ, as this design can keep them loose
     // coupling with each other.
-    let (tx_sub, rx_sub) = channel();
-    let (tx_pub, rx_pub) = channel();
+    let (tx_sub, rx_sub) = channel::unbounded();
+    let (tx_pub, rx_pub) = channel::unbounded();
     start_pubsub(
         "auth",
         routing_key!([
@@ -192,7 +200,7 @@ fn main() {
 
     // a single thread to batch forward transactions
     let tx_pub_forward = tx_pub.clone();
-    let (tx_request, rx_request) = channel();
+    let (tx_request, rx_request) = channel::unbounded();
     thread::spawn(move || {
         let mut batch_forward =
             BatchForward::new(count_per_batch, buffer_duration, rx_request, tx_pub_forward);

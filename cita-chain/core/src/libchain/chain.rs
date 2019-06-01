@@ -35,28 +35,29 @@ use libproto::blockchain::{
 pub use types::block::*;
 use types::extras::*;
 
+use cita_db::kvdb::*;
+use cita_merklehash;
 use cita_types::traits::LowerHex;
 use cita_types::{Address, H256, U256};
+use hashable::Hashable;
 use header::Header;
 use libproto::executor::ExecutedResult;
 use libproto::router::{MsgType, RoutingKey, SubModules};
+use libproto::TryInto;
 use libproto::{BlockTxHashes, FullTransaction, Message};
 use proof::BftProof;
+use pubsub::channel::Sender;
 use receipt::{LocalizedReceipt, Receipt};
 use rlp::{self, Encodable};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::convert::{Into, TryInto};
+use std::convert::Into;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use types::cache_manager::CacheManager;
 use types::filter::Filter;
 use types::ids::{BlockId, TransactionId};
 use types::log_entry::{LocalizedLogEntry, LogEntry};
 use types::transaction::{Action, SignedTransaction};
-use util::kvdb::*;
-use util::merklehash;
-use util::Hashable;
 use util::HeapSizeOf;
 use util::{Mutex, RwLock};
 
@@ -77,7 +78,7 @@ pub struct RelayInfo {
 pub struct TxProof {
     tx: SignedTransaction,
     receipt: Receipt,
-    receipt_proof: merklehash::MerkleProof,
+    receipt_proof: cita_merklehash::Proof,
     block_header: Header,
     next_proposal_header: Header,
     proposal_proof: ProtoProof,
@@ -97,10 +98,12 @@ impl TxProof {
             return false;
         };
         // Use receipt_proof and receipt_root to prove the receipt in the block.
-        if merklehash::verify_proof(
-            *self.block_header.receipts_root(),
-            &self.receipt_proof,
+        let receipt_merkle_proof: cita_merklehash::MerkleProof<H256> =
+            self.receipt_proof.clone().into();
+        if receipt_merkle_proof.verify(
+            self.block_header.receipts_root(),
             self.receipt.clone().rlp_bytes().into_vec().crypt_hash(),
+            cita_merklehash::merge,
         ) {
         } else {
             warn!("txproof verify receipt root merklehash failed");
@@ -147,14 +150,13 @@ impl TxProof {
             let from_chain_id = U256::from(iter.next().unwrap());
             let to_chain_id = U256::from(iter.next().unwrap());
             let dest_contract = Address::from(H256::from(iter.next().unwrap()));
-            let dest_hasher = iter.next().unwrap()[..4]
-                .into_iter()
-                .take(4)
-                .enumerate()
-                .fold([0u8; 4], |mut acc, (idx, val)| {
+            let dest_hasher = iter.next().unwrap()[..4].iter().take(4).enumerate().fold(
+                [0u8; 4],
+                |mut acc, (idx, val)| {
                     acc[idx] = *val;
                     acc
-                });
+                },
+            );
             let cross_chain_nonce = U256::from(iter.next().unwrap()).low_u64();
             Some(RelayInfo {
                 from_chain_id,
@@ -257,7 +259,6 @@ impl BloomGroupDatabase for Chain {
         let position = LogGroupPosition::from(position.clone());
         let result = self
             .db
-            .read()
             .read_with_cache(db::COL_EXTRA, &self.blocks_blooms, &position)
             .map(Into::into);
         self.cache_man
@@ -283,7 +284,7 @@ pub struct Chain {
     pub max_store_height: AtomicUsize,
     pub block_map: RwLock<BTreeMap<u64, BlockInQueue>>,
     pub proof_map: RwLock<BTreeMap<u64, ProtoProof>>,
-    pub db: RwLock<Arc<KeyValueDB>>,
+    pub db: Arc<KeyValueDB>,
 
     // block cache
     pub block_headers: RwLock<HashMap<BlockNumber, Header>>,
@@ -391,7 +392,7 @@ impl Chain {
             blocks_blooms: RwLock::new(HashMap::new()),
             block_receipts: RwLock::new(HashMap::new()),
             cache_man: Mutex::new(cache_man),
-            db: RwLock::new(db),
+            db,
             polls_filter: Arc::new(Mutex::new(PollManager::default())),
             nodes: RwLock::new(Vec::new()),
             validators: RwLock::new(Vec::new()),
@@ -448,7 +449,6 @@ impl Chain {
     pub fn block_height_by_hash(&self, hash: H256) -> Option<BlockNumber> {
         let result = self
             .db
-            .read()
             .read_with_cache(db::COL_EXTRA, &self.block_hashes, &hash);
         self.cache_man.lock().note_used(CacheId::BlockHashes(hash));
         result
@@ -458,12 +458,12 @@ impl Chain {
         let conf = ret.get_config();
         let nodes = conf.get_nodes();
         let nodes: Vec<Address> = nodes
-            .into_iter()
+            .iter()
             .map(|vecaddr| Address::from_slice(&vecaddr[..]))
             .collect();
         let validators = conf.get_validators();
         let validators: Vec<Address> = validators
-            .into_iter()
+            .iter()
             .map(|vecaddr| Address::from_slice(&vecaddr[..]))
             .collect();
         let block_interval = conf.get_block_interval();
@@ -521,7 +521,7 @@ impl Chain {
         if !info.get_receipts().is_empty() {
             let receipts: Vec<Receipt> = info
                 .get_receipts()
-                .into_iter()
+                .iter()
                 .map(|receipt_with_option| Receipt::from(receipt_with_option.get_receipt().clone()))
                 .collect();
 
@@ -603,7 +603,7 @@ impl Chain {
         }
 
         batch.write(db::COL_EXTRA, &CurrentHash, &hash);
-        self.db.read().write(batch).expect("DB write failed.");
+        self.db.write(batch).expect("DB write failed.");
         {
             *self.current_header.write() = hdr;
         }
@@ -771,7 +771,6 @@ impl Chain {
         }
         let result = self
             .db
-            .read()
             .read_with_cache(db::COL_HEADERS, &self.block_headers, &idx);
         self.cache_man.lock().note_used(CacheId::BlockHeaders(idx));
         result
@@ -803,7 +802,6 @@ impl Chain {
     fn block_body_by_height(&self, number: BlockNumber) -> Option<BlockBody> {
         let result = self
             .db
-            .read()
             .read_with_cache(db::COL_BODIES, &self.block_bodies, &number);
         self.cache_man
             .lock()
@@ -828,10 +826,9 @@ impl Chain {
 
     /// Get address of transaction by hash.
     fn transaction_address(&self, hash: TransactionId) -> Option<TransactionAddress> {
-        let result =
-            self.db
-                .read()
-                .read_with_cache(db::COL_EXTRA, &self.transaction_addresses, &hash);
+        let result = self
+            .db
+            .read_with_cache(db::COL_EXTRA, &self.transaction_addresses, &hash);
         self.cache_man
             .lock()
             .note_used(CacheId::TransactionAddresses(hash));
@@ -889,19 +886,27 @@ impl Chain {
                         }
                     })
                     .and_then(|receipt| {
-                        merklehash::MerkleTree::from_bytes(
-                            receipts.receipts.iter().map(|r| r.rlp_bytes().into_vec()),
+                        cita_merklehash::Tree::from_hashes(
+                            receipts
+                                .receipts
+                                .iter()
+                                .map(|r| r.rlp_bytes().into_vec().crypt_hash())
+                                .collect::<Vec<_>>(),
+                            cita_merklehash::merge,
                         )
                         .get_proof_by_input_index(index)
                         .map(|receipt_proof| (index, block, receipt.clone(), receipt_proof))
                     })
             })
             .and_then(|(index, block, receipt, receipt_proof)| {
-                block
-                    .body()
-                    .transactions()
-                    .get(index)
-                    .map(|tx| (tx.clone(), receipt, receipt_proof, block.header().clone()))
+                block.body().transactions().get(index).map(|tx| {
+                    (
+                        tx.clone(),
+                        receipt,
+                        receipt_proof.into(),
+                        block.header().clone(),
+                    )
+                })
             })
             .and_then(|(tx, receipt, receipt_proof, block_header)| {
                 self.block_by_height(block_header.number() + 1)
@@ -1065,14 +1070,13 @@ impl Chain {
 
     #[inline]
     pub fn current_block_poof(&self) -> Option<ProtoProof> {
-        self.db.read().read(db::COL_EXTRA, &CurrentProof)
+        self.db.read(db::COL_EXTRA, &CurrentProof)
     }
 
     pub fn save_current_block_poof(&self, proof: &ProtoProof) {
         let mut batch = DBTransaction::new();
         batch.write(db::COL_EXTRA, &CurrentProof, proof);
         self.db
-            .read()
             .write(batch)
             .expect("save_current_block_poof DB write failed.");
     }
@@ -1120,7 +1124,7 @@ impl Chain {
                         receipts.len(),
                         hashes.len()
                     );
-                    assert!(false);
+                    unreachable!();
                 }
                 log_index = receipts
                     .iter()
@@ -1183,8 +1187,15 @@ impl Chain {
         from_block: BlockId,
         to_block: BlockId,
     ) -> Option<Vec<BlockNumber>> {
-        match (self.block_number(from_block), self.block_number(to_block)) {
-            (Some(from), Some(to)) => Some(self.blocks_with_bloom(bloom, from, to)),
+        match (
+            self.block_number(from_block),
+            self.block_number(to_block),
+            self.block_number(BlockId::Pending),
+        ) {
+            (Some(from), Some(to), Some(pending)) => {
+                let end = if to > pending { pending } else { to };
+                Some(self.blocks_with_bloom(bloom, from, end))
+            }
             _ => None,
         }
     }
@@ -1287,7 +1298,6 @@ impl Chain {
     pub fn block_receipts(&self, hash: H256) -> Option<BlockReceipts> {
         let result = self
             .db
-            .read()
             .read_with_cache(db::COL_EXTRA, &self.block_receipts, &hash);
         self.cache_man
             .lock()
@@ -1395,7 +1405,7 @@ impl Chain {
                 .note_used(CacheId::BlockBodies(height as BlockNumber));
         }
         batch.write(db::COL_EXTRA, &CurrentHeight, &height);
-        let _ = self.db.read().write(batch);
+        let _ = self.db.write(batch);
     }
 
     pub fn compare_status(&self, st: &Status) -> (u64, u64) {

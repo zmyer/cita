@@ -1,5 +1,5 @@
 // CITA
-// Copyright 2016-2018 Cryptape Technologies LLC.
+// Copyright 2016-2019 Cryptape Technologies LLC.
 
 // This program is free software: you can redistribute it
 // and/or modify it under the terms of the GNU General Public
@@ -32,7 +32,8 @@ use types::reserved_addresses;
 
 lazy_static! {
     static ref DELAY_BLOCK_NUMBER: Vec<u8> = method_tools::encode_to_vec(b"getDelayBlockNumber()");
-    static ref PERMISSION_CHECK: Vec<u8> = method_tools::encode_to_vec(b"getPermissionCheck()");
+    static ref CALL_PERMISSION_CHECK: Vec<u8> =
+        method_tools::encode_to_vec(b"getPermissionCheck()");
     static ref PERMISSION_SEND_TX_CHECK: Vec<u8> =
         method_tools::encode_to_vec(b"getSendTxPermissionCheck()");
     static ref PERMISSION_CREATE_CONTRACT_CHECK: Vec<u8> =
@@ -102,19 +103,23 @@ impl<'a> SysConfig<'a> {
     }
 
     pub fn default_delay_block_number() -> u64 {
-        error!("Use default delay block number.");
+        info!("Use default delay block number.");
         1
     }
 
-    /// Whether check permission or not
-    pub fn permission_check(&self, block_id: BlockId) -> Option<bool> {
-        self.get_value(&[ParamType::Bool], PERMISSION_CHECK.as_slice(), block_id)
-            .ok()
-            .and_then(|mut x| x.remove(0).to_bool())
+    /// Whether check call permission or not
+    pub fn call_permission_check(&self, block_id: BlockId) -> Option<bool> {
+        self.get_value(
+            &[ParamType::Bool],
+            CALL_PERMISSION_CHECK.as_slice(),
+            block_id,
+        )
+        .ok()
+        .and_then(|mut x| x.remove(0).to_bool())
     }
 
-    pub fn default_permission_check() -> bool {
-        error!("Use default permission check.");
+    pub fn default_call_permission_check() -> bool {
+        info!("Use default permission check.");
         false
     }
 
@@ -129,7 +134,7 @@ impl<'a> SysConfig<'a> {
     }
 
     pub fn default_send_tx_permission_check() -> bool {
-        error!("Use default send tx permission check.");
+        info!("Use default send tx permission check.");
         false
     }
 
@@ -144,7 +149,7 @@ impl<'a> SysConfig<'a> {
     }
 
     pub fn default_create_contract_permission_check() -> bool {
-        error!("Use default create contract permission check.");
+        info!("Use default create contract permission check.");
         false
     }
 
@@ -156,7 +161,7 @@ impl<'a> SysConfig<'a> {
     }
 
     pub fn default_quota_check() -> bool {
-        error!("Use default quota check.");
+        info!("Use default quota check.");
         false
     }
 
@@ -172,7 +177,7 @@ impl<'a> SysConfig<'a> {
     }
 
     pub fn default_fee_back_platform_check() -> bool {
-        warn!("Use default fee back platform check.");
+        info!("Use default fee back platform check.");
         false
     }
 
@@ -185,7 +190,7 @@ impl<'a> SysConfig<'a> {
     }
 
     pub fn default_chain_owner() -> Address {
-        warn!("Use default chain owner.");
+        info!("Use default chain owner.");
         Address::from([0u8; 20])
     }
 
@@ -316,7 +321,7 @@ impl<'a> SysConfig<'a> {
                 .unwrap_or_else(SysConfig::default_chain_id);
 
             Some(ChainId::V0(id_v0))
-        } else if version == 1 {
+        } else if version < 3 {
             let id_v1 = self
                 .chain_id_v1(BlockId::Pending)
                 .unwrap_or_else(SysConfig::default_chain_id_v1);
@@ -343,7 +348,7 @@ impl<'a> SysConfig<'a> {
 
 #[cfg(test)]
 mod tests {
-    extern crate logger;
+    extern crate cita_logger as logger;
 
     use super::{EconomicalModel, SysConfig, TokenInfo};
     use cita_types::Address;
@@ -355,7 +360,7 @@ mod tests {
     fn test_delay_block_number() {
         let executor = init_executor(vec![
             ("SysConfig.delayBlockNumber", "2"),
-            ("SysConfig.checkPermission", "false"),
+            ("SysConfig.checkCallPermission", "false"),
             ("SysConfig.checkSendTxPermission", "false"),
             ("SysConfig.checkCreateContractPermission", "false"),
             ("SysConfig.checkQuota", "true"),
@@ -381,9 +386,9 @@ mod tests {
         let number = config.delay_block_number(BlockId::Pending).unwrap();
         assert_eq!(number, 2);
 
-        // Test permission_check
-        let check_permission = config.permission_check(BlockId::Pending).unwrap();
-        assert_eq!(check_permission, false);
+        // Test call permission_check
+        let check_call_permission = config.call_permission_check(BlockId::Pending).unwrap();
+        assert_eq!(check_call_permission, false);
 
         // Test send_tx_permission_check
         let check_send_tx_permission = config.send_tx_permission_check(BlockId::Pending).unwrap();

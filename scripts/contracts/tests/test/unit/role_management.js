@@ -1,20 +1,20 @@
 const fs = require('fs');
+const chai = require('chai');
 const util = require('../helpers/util');
 const roleManagement = require('../helpers/role_management');
 const roleAuth = require('../helpers/role_auth');
 const permissionManagement = require('../helpers/permission_management');
 const authorization = require('../helpers/authorization');
 const config = require('../config');
-const chai = require('chai');
 
 const { expect } = chai;
 
 // util
 const {
-  web3, getTxReceipt, logger, genContract,
+  getTxReceipt, logger, genContract, citaSDK,
 } = util;
 
-const roleAbi = JSON.parse(fs.readFileSync('abi/Role.abi'));
+const roleAbi = JSON.parse(fs.readFileSync('../interaction/abi/Role.abi'));
 const {
   deleteRole, clearRole,
   cancelRole, setRole, deletePermissions, addPermissions, updateRoleName, newRole,
@@ -38,10 +38,10 @@ let hash;
 let roleInstance;
 
 // test data
-const name = web3.utils.utf8ToHex('testNewRole');
-const newName = web3.utils.utf8ToHex('testNewRoleName');
-const name2 = web3.utils.utf8ToHex('testNewRole2');
-const permName = web3.utils.utf8ToHex('testPermission');
+const name = citaSDK.utils.utf8ToHex('testNewRole');
+const newName = citaSDK.utils.utf8ToHex('testNewRoleName');
+const name2 = citaSDK.utils.utf8ToHex('testNewRole2');
+const permName = citaSDK.utils.utf8ToHex('testPermission');
 const { testAddr, testFunc, permissions } = config;
 const addr = testAddr[0];
 const addr2 = testAddr[1];

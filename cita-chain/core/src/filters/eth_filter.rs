@@ -16,7 +16,7 @@
 
 use super::{limit_logs, PollFilter, PollId};
 use cita_types::H256;
-use jsonrpc_types::rpctypes::{Filter, FilterChanges, Log};
+use jsonrpc_types::rpc_types::{Filter, FilterChanges, Log};
 use libchain::chain::Chain;
 use types::filter::Filter as EthcoreFilter;
 use types::ids::BlockId;
@@ -58,7 +58,8 @@ impl EthFilter for Chain {
                 PollFilter::Block(ref mut block_number) => {
                     // + 1, cause we want to return hashes including current block hash.
                     let current_number = self.get_current_height() + 1;
-                    let hashes = (*block_number..current_number)
+                    // + 1, cause we want to return hashes from next block after a block filter was created.
+                    let hashes = ((*block_number + 1)..current_number)
                         .filter_map(|_id| self.block_hash_by_height(_id))
                         .collect::<Vec<H256>>();
 

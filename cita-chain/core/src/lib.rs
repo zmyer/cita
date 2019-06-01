@@ -1,5 +1,5 @@
 // CITA
-// Copyright 2016-2017 Cryptape Technologies LLC.
+// Copyright 2016-2019 Cryptape Technologies LLC.
 
 // This program is free software: you can redistribute it
 // and/or modify it under the terms of the GNU General Public
@@ -14,22 +14,23 @@
 
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#![feature(try_from)]
-#![cfg_attr(test, feature(test))]
-#![feature(tool_lints)]
 
 extern crate byteorder;
 #[macro_use]
 extern crate libproto;
 #[macro_use]
-extern crate logger;
+extern crate cita_logger as logger;
+extern crate cita_merklehash;
+extern crate hashable;
 extern crate lru_cache;
 extern crate proof;
 extern crate rlp;
+extern crate snappy;
 #[macro_use]
 extern crate serde_derive;
 #[macro_use]
 extern crate util;
+extern crate db as cita_db;
 
 #[macro_use]
 extern crate rlp_derive;
@@ -42,15 +43,13 @@ extern crate cita_secp256k1;
 extern crate cita_types;
 extern crate common_types as types;
 extern crate crossbeam;
-extern crate crypto;
 extern crate jsonrpc_types;
+extern crate pubsub;
 extern crate time;
 extern crate transient_hashmap;
 
 #[cfg(test)]
 extern crate cita_crypto;
-#[cfg(test)]
-extern crate test;
 
 pub mod env_info;
 
@@ -61,5 +60,5 @@ pub mod filters;
 pub mod libchain;
 pub mod snapshot;
 
+pub use cita_db::journaldb;
 pub use types::*;
-pub use util::journaldb;

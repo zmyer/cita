@@ -1,5 +1,5 @@
 // CITA
-// Copyright 2016-2017 Cryptape Technologies LLC.
+// Copyright 2016-2019 Cryptape Technologies LLC.
 
 // This program is free software: you can redistribute it
 // and/or modify it under the terms of the GNU General Public
@@ -66,9 +66,6 @@
 //! [`Chain`]: ../core/libchain/chain/struct.Chain.html
 //!
 
-#![feature(try_from)]
-#![feature(tool_lints)]
-
 extern crate byteorder;
 extern crate cita_types;
 extern crate clap;
@@ -80,50 +77,55 @@ extern crate jsonrpc_types;
 #[macro_use]
 extern crate libproto;
 #[macro_use]
-extern crate logger;
+extern crate cita_logger as logger;
 extern crate proof;
 extern crate pubsub;
 extern crate serde_json;
 #[macro_use]
 extern crate util;
+extern crate cita_directories;
+extern crate db as cita_db;
 
 mod block_processor;
 mod forward;
 
 use block_processor::BlockProcessor;
+use cita_db::kvdb::{Database, DatabaseConfig};
+use cita_directories::DataPath;
 use clap::App;
 use core::db;
 use core::libchain;
 use forward::Forward;
 use libproto::router::{MsgType, RoutingKey, SubModules};
-use pubsub::start_pubsub;
-use std::sync::mpsc::channel;
+use pubsub::{channel, start_pubsub};
 use std::sync::Arc;
 use std::thread;
 use std::time;
 use std::time::Duration;
-use util::datapath::DataPath;
-use util::kvdb::{Database, DatabaseConfig};
 use util::set_panic_handler;
 
 include!(concat!(env!("OUT_DIR"), "/build_info.rs"));
 
 fn main() {
-    micro_service_init!("cita-chain", "CITA:chain");
-    info!("Version: {}", get_build_info_str(true));
-
     let matches = App::new("chain")
         .version(get_build_info_str(true))
         .long_version(get_build_info_str(false))
         .author("Cryptape")
         .about("CITA Block Chain Node powered by Rust")
-        .arg_from_usage("-c, --config=[FILE] 'Sets a chain config file'")
+        .args_from_usage(
+            "-c, --config=[FILE] 'Sets a chain config file'
+                          -s, --stdout 'Log to console'",
+        )
         .get_matches();
+
+    let stdout = matches.is_present("stdout");
+    micro_service_init!("cita-chain", "CITA:chain", stdout);
+    info!("Version: {}", get_build_info_str(true));
 
     let config_path = matches.value_of("config").unwrap_or("chain.toml");
 
-    let (tx, rx) = channel();
-    let (ctx_pub, crx_pub) = channel();
+    let (tx, rx) = channel::unbounded();
+    let (ctx_pub, crx_pub) = channel::unbounded();
     start_pubsub(
         "chain",
         routing_key!([
@@ -151,20 +153,20 @@ fn main() {
         &chain_config,
     ));
 
-    let (write_sender, write_receiver) = channel();
+    let (write_sender, write_receiver) = channel::unbounded();
     let forward = Forward::new(Arc::clone(&chain), ctx_pub.clone(), write_sender);
 
     let block_processor = BlockProcessor::new(Arc::clone(&chain), ctx_pub);
 
-    //chain 读写分离
-    //chain 读数据 => 查询数据
+    // Two threads, one for reading, one for writing
+    // Read: dispatch msg
     thread::spawn(move || loop {
         if let Ok((key, msg)) = rx.recv() {
             forward.dispatch_msg(&key, &msg);
         }
     });
 
-    //chain 写数据 => 添加块
+    // Write: add block
     thread::spawn(move || {
         let mut timeout_factor = 0u8;
         loop {

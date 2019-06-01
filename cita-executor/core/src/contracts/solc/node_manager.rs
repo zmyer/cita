@@ -1,5 +1,5 @@
 // CITA
-// Copyright 2016-2017 Cryptape Technologies LLC.
+// Copyright 2016-2019 Cryptape Technologies LLC.
 
 // This program is free software: you can redistribute it
 // and/or modify it under the terms of the GNU General Public
@@ -107,13 +107,15 @@ impl<'a> NodeManager<'a> {
     }
 
     pub fn default_shuffled_stake_nodes() -> Vec<Address> {
-        error!("Use default shuffled stake nodes.");
+        info!("Use default shuffled stake nodes.");
         Vec::new()
     }
 
     pub fn stake_nodes(&self, block_id: BlockId) -> Option<Vec<Address>> {
         self.nodes(block_id).and_then(|nodes| {
-            if let EconomicalModel::Quota = *self.executor.economical_model.read() {
+            if let EconomicalModel::Quota =
+                self.executor.sys_config.block_sys_config.economical_model
+            {
                 Some(nodes)
             } else {
                 self.stakes(block_id).map(|stakes| {
@@ -132,7 +134,7 @@ impl<'a> NodeManager<'a> {
 
 #[cfg(test)]
 mod tests {
-    extern crate logger;
+    extern crate cita_logger as logger;
 
     use super::{party_seats, shuffle, NodeManager};
     use cita_types::H160;

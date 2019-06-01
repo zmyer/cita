@@ -1,9 +1,9 @@
-pragma solidity ^0.4.24;
+pragma solidity 0.4.24;
 
 import "./PermissionCreator.sol";
 import "../common/Check.sol";
-import "../interfaces/IPermissionManagement.sol";
-import "../interfaces/IAuthorization.sol";
+import "../../interaction/interface/IPermissionManagement.sol";
+import "../../interaction/interface/IAuthorization.sol";
 
 /// @title Permission management contract
 /// @author ["Cryptape Technologies <contact@cryptape.com>"]

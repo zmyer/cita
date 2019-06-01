@@ -21,10 +21,11 @@ use handler::SysConfigInfo;
 use libproto::blockchain::{AccountGasLimit, BlockBody, BlockTxs, SignedTransaction};
 use libproto::router::{MsgType, RoutingKey, SubModules};
 use libproto::Message;
+use libproto::TryInto;
+use pubsub::channel::Sender;
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::convert::{Into, TryInto};
-use std::sync::mpsc::Sender;
+use std::convert::Into;
 use std::thread;
 use tx_pool;
 use txwal::TxWal;
@@ -138,6 +139,7 @@ impl Dispatcher {
         success
     }
 
+    // TODO: Wal shoud be inside pool
     pub fn add_txs_to_pool(&self, txs: Vec<SignedTransaction>) {
         let txs_pool = &mut self.txs_pool.borrow_mut();
         let added: Vec<SignedTransaction> = txs
@@ -151,10 +153,13 @@ impl Dispatcher {
 
     pub fn get_txs(&self, ids: &[H256]) -> Vec<SignedTransaction> {
         let pool = self.txs_pool.borrow();
+        ids.iter().filter_map(|id| pool.get(id).cloned()).collect()
+    }
+
+    pub fn check_missing(&self, ids: Vec<H256>) -> Vec<H256> {
+        let pool = self.txs_pool.borrow();
         ids.into_iter()
-            .map(|id| pool.get(id).cloned())
-            .filter(|tx| tx.is_some())
-            .map(|tx| tx.unwrap())
+            .filter(|id| pool.get(id).is_none())
             .collect()
     }
 

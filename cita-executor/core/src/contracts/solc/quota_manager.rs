@@ -1,5 +1,5 @@
 // CITA
-// Copyright 2016-2018 Cryptape Technologies LLC.
+// Copyright 2016-2019 Cryptape Technologies LLC.
 
 // This program is free software: you can redistribute it
 // and/or modify it under the terms of the GNU General Public
@@ -121,7 +121,7 @@ impl<'a> QuotaManager<'a> {
     }
 
     pub fn default_quota() -> Vec<u64> {
-        error!("Use default quota.");
+        info!("Use default quota.");
         Vec::new()
     }
 
@@ -139,7 +139,7 @@ impl<'a> QuotaManager<'a> {
     }
 
     pub fn default_users() -> Vec<Address> {
-        error!("Use default users.");
+        info!("Use default users.");
         Vec::new()
     }
 
@@ -152,7 +152,7 @@ impl<'a> QuotaManager<'a> {
     }
 
     pub fn default_block_quota_limit() -> u64 {
-        error!("Use default block quota limit.");
+        info!("Use default block quota limit.");
         BQL_VALUE
     }
 
@@ -170,7 +170,7 @@ impl<'a> QuotaManager<'a> {
     }
 
     pub fn default_account_quota_limit() -> u64 {
-        error!("Use default account quota limit.");
+        info!("Use default account quota limit.");
         AQL_VALUE
     }
 
@@ -188,14 +188,14 @@ impl<'a> QuotaManager<'a> {
     }
 
     pub fn default_auto_exec_quota_limit() -> u64 {
-        error!("Use default auto exec quota limit.");
+        info!("Use default auto exec quota limit.");
         AUTO_EXEC_QL_VALUE
     }
 }
 
 #[cfg(test)]
 mod tests {
-    extern crate logger;
+    extern crate cita_logger as logger;
 
     use super::{QuotaManager, AQL_VALUE, AUTO_EXEC_QL_VALUE, BQL_VALUE};
     use cita_types::H160;

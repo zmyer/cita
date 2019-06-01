@@ -16,28 +16,27 @@
 
 //! Snapshot format and creation.
 
-extern crate ethcore_bloom_journal;
-extern crate num_cpus;
-
 // chunks around 4MB before compression
 const PREFERRED_CHUNK_SIZE: usize = 4 * 1024 * 1024;
 
 use account_db::{AccountDB, AccountDBMut};
 
+use cita_db::hashdb::DBValue;
+use cita_db::journaldb::{self, Algorithm, JournalDB};
+use cita_db::kvdb::{DBTransaction, Database, KeyValueDB};
+use cita_db::{HashDB, Trie, TrieDB, TrieDBMut, TrieMut};
 use cita_types::{Address, H256, U256};
 use db::{Writable, COL_EXTRA, COL_HEADERS, COL_STATE};
+use hashable::Hashable;
+use hashable::{HASH_EMPTY, HASH_NULL_RLP};
 use libexecutor::executor::Executor;
 use rlp::{DecoderError, Encodable, RlpStream, UntrustedRlp};
+use snappy;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use util::hashdb::DBValue;
-use util::journaldb::JournalDB;
-use util::journaldb::{self, Algorithm};
-use util::kvdb::{DBTransaction, Database, KeyValueDB};
-use util::{snappy, Bytes, HashDB, Hashable, Mutex, HASH_NULL_RLP};
-use util::{Trie, TrieDB, TrieDBMut, TrieMut, HASH_EMPTY};
+use util::{Bytes, Mutex};
 
 pub mod account;
 pub mod error;
@@ -51,6 +50,7 @@ use snapshot::service::SnapshotService;
 pub use types::basic_account::BasicAccount;
 use types::ids::BlockId;
 
+use super::state::backend::Backend;
 use super::state::Account as StateAccount;
 use super::state_db::StateDB;
 use ethcore_bloom_journal::Bloom;
@@ -175,32 +175,38 @@ impl ManifestData {
 /// snapshot using: given Executor+ starting block hash + database; writing into the given writer.
 pub fn take_snapshot<W: SnapshotWriter + Send>(
     executor: &Executor,
-    block_at: H256,
-    state_db: &HashDB,
+    highest_height: u64,
     writer: W,
     p: &Progress,
 ) -> Result<(), Error> {
-    let start_header = executor
-        .block_header_by_hash(block_at)
-        .ok_or_else(|| Error::InvalidStartingBlock(BlockId::Hash(block_at)))?;
-    let state_root = start_header.state_root();
-    let number = start_header.number();
+    let start_header: Header = executor
+        .block_header(BlockId::Number(highest_height))
+        .ok_or_else(|| Error::InvalidStartingBlock(BlockId::Number(highest_height)))?;
+    let block_number = start_header.number();
+    let block_hash = start_header.hash().unwrap();
+    let state_root = *start_header.state_root();
+    let fake_parent_hash: H256 = Default::default();
+    let state_db = executor
+        .state_db
+        .read()
+        .boxed_clone_canon(&fake_parent_hash);
+    let hash_db = state_db.as_hashdb();
 
     info!(
-        "Taking snapshot starting at block {}, state_root {:?}",
-        number, state_root
+        "Taking snapshot starting from {}-th, state_root {:?}",
+        block_number, state_root,
     );
 
     let writer = Mutex::new(writer);
-    let state_hashes = chunk_state(state_db, state_root, &writer, p)?;
-    let block_hashes = chunk_secondary(executor, block_at, &writer, p)?;
+    let state_hashes = chunk_state(hash_db, &state_root, &writer, p)?;
+    let block_hashes = chunk_secondary(executor, block_hash, &writer, p)?;
 
     let manifest_data = ManifestData {
         state_hashes,
         block_hashes,
-        state_root: *state_root,
-        block_number: number,
-        block_hash: block_at,
+        state_root,
+        block_number,
+        block_hash,
     };
 
     writer.into_inner().finish(manifest_data)?;
@@ -279,7 +285,7 @@ pub fn chunk_state<'a>(
     writer: &Mutex<SnapshotWriter + 'a>,
     progress: &'a Progress,
 ) -> Result<Vec<H256>, Error> {
-    let account_trie = TrieDB::new(db, &root).map_err(|err| *err)?;
+    let account_trie = TrieDB::create(db, &root).map_err(|err| *err)?;
 
     let mut chunker = StateChunker {
         hashes: Vec::new(),
@@ -299,7 +305,7 @@ pub fn chunk_state<'a>(
         let basic_account = ::rlp::decode(&*account_data);
         let account_key = H256::from_slice(&account_key);
         let account_address = Address::from_slice(&account_key);
-        trace!("Account: {:?}", account_address);
+        trace!("taking snapshot of account: {:?}", account_address);
 
         let account_db = AccountDB::new(db, &account_address);
 
@@ -378,7 +384,7 @@ impl<'a> BlockChunker<'a> {
             let header_rlp = s.out();
 
             if blocks_num % step == 0 {
-                info!("current height: {:?}", header.number());
+                info!("taking snapshot of {}-th header", header.number());
             }
 
             let new_loaded_size = loaded_size + header_rlp.len();
@@ -604,12 +610,6 @@ impl StateRebuilder {
     /// journal entry.
     /// Once all chunks have been fed, there should be nothing missing.
     pub fn finalize(mut self, era: u64, id: H256) -> Result<Box<JournalDB>, ::error::Error> {
-        /*let missing = self.missing_code.values().cloned().collect::<Vec<_>>();
-        if !missing.is_empty() { return Err(Error::MissingCode(missing).into()) }
-        
-        let missing = self.missing_abi.values().cloned().collect::<Vec<_>>();
-        if !missing.is_empty() { return Err(Error::MissingAbi(missing).into()) }*/
-
         let mut batch = self.db.backing().transaction();
         self.db.journal_under(&mut batch, era, &id)?;
         self.db.backing().write_buffered(batch);
@@ -834,6 +834,7 @@ impl BlockRebuilder {
         batch.write(COL_EXTRA, &height, &hash);
 
         if is_best {
+            info!("snapshot restoration write CURRENT_HASH: {:?}", hash);
             batch.write(COL_EXTRA, &CurrentHash, &hash);
         }
     }
@@ -841,25 +842,6 @@ impl BlockRebuilder {
     /// Glue together any disconnected chunks and check that the chain is complete.
     fn finalize(&self) -> Result<(), ::error::Error> {
         let mut batch = self.db.transaction();
-
-        /*for (first_num, first_hash) in self.disconnected.drain(..) {
-            let parent_num = first_num - 1;
-        
-            // check if the parent is even in the chain.
-            // since we don't restore every single block in the chain,
-            // the first block of the first chunks has nothing to connect to.
-            if let Some(parent_hash) = self.chain.block_hash(parent_num) {
-                // if so, add the child to it.
-                self.chain.add_child(&mut batch, parent_hash, first_hash);
-            }
-        }*/
-
-        /*let genesis_hash = self.chain.genesis_hash();
-        self.chain.insert_epoch_transition(&mut batch, 0, ::engines::EpochTransition {
-            block_number: 0,
-            block_hash: genesis_hash,
-            proof: vec![],
-        });*/
         let genesis_header = self
             .executor
             .block_header_by_height(0)

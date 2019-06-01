@@ -176,7 +176,7 @@ impl From<ProtoBlockBody> for BlockBody {
             transactions: body
                 .get_transactions()
                 .iter()
-                .map(|t| SignedTransaction::new(t).expect("transaction can not be converted"))
+                .map(|t| SignedTransaction::create(t).expect("transaction can not be converted"))
                 .collect(),
         }
     }
@@ -193,8 +193,11 @@ impl BlockBody {
 
     pub fn protobuf(&self) -> ProtoBlockBody {
         let mut body = ProtoBlockBody::new();
-        let txs: Vec<ProtoSignedTransaction> =
-            self.transactions.iter().map(|t| t.protobuf()).collect();
+        let txs: Vec<ProtoSignedTransaction> = self
+            .transactions
+            .iter()
+            .map(SignedTransaction::protobuf)
+            .collect();
         body.set_transactions(txs.into());
         body
     }

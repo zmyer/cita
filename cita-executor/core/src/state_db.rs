@@ -18,9 +18,10 @@
 // Remove some hf code.
 
 use byteorder::{ByteOrder, LittleEndian};
+use cita_db::{DBTransaction, HashDB, JournalDB, KeyValueDB};
 use cita_types::{Address, H256};
 use db::COL_ACCOUNT_BLOOM;
-use ethcore_bloom_journal::*;
+use ethcore_bloom_journal::{Bloom, BloomJournal};
 use header::BlockNumber;
 use lru_cache::LruCache;
 use state::backend::*;
@@ -28,7 +29,7 @@ use state::Account;
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use util::cache::MemoryLruCache;
-use util::{DBTransaction, HashDB, JournalDB, KeyValueDB, Mutex, UtilError};
+use util::{Mutex, UtilError};
 
 /// Value used to initialize bloom bitmap size.
 ///
@@ -212,21 +213,6 @@ impl StateDB {
         self.db.mark_canonical(batch, now, id)
     }
 
-    /// Clone the database.
-    pub fn boxed_clone(&self) -> StateDB {
-        StateDB {
-            db: self.db.boxed_clone(),
-            account_cache: self.account_cache.clone(),
-            code_cache: self.code_cache.clone(),
-            local_account_cache: Vec::new(),
-            account_bloom: self.account_bloom.clone(),
-            cache_size: self.cache_size,
-            parent_hash: None,
-            commit_hash: None,
-            commit_number: None,
-        }
-    }
-
     /// Clone the database for a canonical state.
     pub fn boxed_clone_canon(&self, parent: &H256) -> StateDB {
         StateDB {
@@ -338,7 +324,7 @@ impl Backend for StateDB {
         cache
             .accounts
             .get_mut(addr)
-            .and_then(|a| a.as_ref().map(|a| a.clone_basic()))
+            .and_then(|a| a.as_ref().map(Account::clone_basic))
     }
 
     fn get_cached<F, U>(&self, a: &Address, f: F) -> Option<U>

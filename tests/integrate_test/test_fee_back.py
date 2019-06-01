@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-
 """
 Test case of fee back to operator in charge economical mode.
 """
@@ -13,15 +12,16 @@ from jsonrpcclient.http_client import HTTPClient
 LATEST_VERSION = 1
 DEFAULT_QUOTA_PRICE = 1000000
 
+
 def send_tx(privkey, code="", version=LATEST_VERSION):
     """
     Send a transaction
 
-    python3 make_tx.py 
-    --privkey "5f0258a4778057a8a7d97809bd209055b2fbafa654ce7d31ec7191066b9225e6" 
-    --code ""   
+    python3 make_tx.py
+    --privkey "5f0258a4778057a8a7d97809bd209055b2fbafa654ce7d31ec7191066b9225e6"
+    --code ""
 
-    python3 send_tx.py 
+    python3 send_tx.py
     """
 
     kwargs = {
@@ -40,9 +40,11 @@ def send_tx(privkey, code="", version=LATEST_VERSION):
     with open('../output/transaction/hash') as fobj:
         return fobj.read().strip()
 
+
 def get_balance(addr):
     """ Get the balance of an address """
     return int(rpc_request('getBalance', [addr, 'pending']), 16)
+
 
 def get_receipt(tx_hash, retry=8):
     """ Get receipt of a transaction """
@@ -53,10 +55,12 @@ def get_receipt(tx_hash, retry=8):
         time.sleep(4)
         retry -= 1
 
+
 def rpc_request(method, params):
     """ Send a jsonrpc request to default url. """
     client = HTTPClient('http://127.0.0.1:1337')
     return client.request(method, params)
+
 
 def main():
     """ Run the test. """
@@ -75,18 +79,24 @@ def main():
     print('[operator.balance old]:{}'.format(operator_balance_old))
     print('[operator.balance]:{}'.format(operator_balance_new))
     print('[quotaUsed]:{}'.format(receipt['quotaUsed']))
-    assert operator_balance_new - operator_balance_old == int(receipt['quotaUsed'], 16) * DEFAULT_QUOTA_PRICE
+    assert operator_balance_new - operator_balance_old == int(
+        receipt['quotaUsed'], 16) * DEFAULT_QUOTA_PRICE
 
     print('>>> Test fee back successfully!')
+
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--version", help="Tansaction version.", default=LATEST_VERSION, type=int)
+        "--version",
+        help="Tansaction version.",
+        default=LATEST_VERSION,
+        type=int)
 
     opts = parser.parse_args()
-    
+
     return opts
+
 
 if __name__ == '__main__':
     main()

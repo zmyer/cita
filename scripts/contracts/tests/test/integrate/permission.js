@@ -5,7 +5,7 @@ const config = require('../config');
 
 const { expect } = chai;
 const {
-  nervos, logger, genTxParams, genContract, getTxReceipt, web3,
+  citaSDK, logger, genTxParams, genContract, getTxReceipt,
 } = util;
 
 
@@ -33,7 +33,7 @@ const {
 } = permissionManagement;
 
 
-const name = web3.utils.utf8ToHex('testPermission');
+const name = citaSDK.utils.utf8ToHex('testPermission');
 
 const {
   superAdmin,
@@ -42,7 +42,7 @@ const {
 describe('\n\nDeploy a contract\n\n', () => {
   it('should send a tx: deploy_contract', async () => {
     param = await genTxParams(superAdmin);
-    const res = await nervos.appchain.deploy(
+    const res = await citaSDK.base.deploy(
       bin,
       param,
     );
@@ -107,4 +107,3 @@ describe('\n\nDeploy a contract\n\n', () => {
     expect(res.errorMessage).to.be.null;
   });
 });
-

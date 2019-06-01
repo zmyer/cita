@@ -15,10 +15,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use jsonrpc_types::rpctypes::EconomicalModel as RpcEconomicalModel;
+use jsonrpc_types::rpc_types::EconomicalModel as RpcEconomicalModel;
 
 enum_from_primitive! {
-    #[derive(Debug, Clone, PartialEq, Copy)]
+    #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Copy)]
     pub enum EconomicalModel {
         /// Default model. Sending Transaction is free, should work with authority together.
         Quota,

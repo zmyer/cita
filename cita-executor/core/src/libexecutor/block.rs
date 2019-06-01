@@ -16,15 +16,15 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use basic_types::LogBloom;
+use cita_merklehash;
 use cita_types::{Address, H256, U256};
-use contracts::solc::PriceManagement;
 use engines::Engine;
 use error::Error;
 use evm::env_info::{EnvInfo, LastHashes};
 use factory::Factories;
+use hashable::Hashable;
 use libexecutor::auto_exec::auto_exec;
-use libexecutor::economical_model::EconomicalModel;
-use libexecutor::executor::{CheckOptions, Executor, GlobalSysConfig};
+use libexecutor::sys_config::BlockSysConfig;
 use libproto::executor::{ExecutedInfo, ReceiptWithOption};
 use receipt::Receipt;
 use rlp::*;
@@ -32,17 +32,10 @@ use state::State;
 use state_db::StateDB;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Instant;
 use trace::FlatTrace;
 pub use types::block::{Block, BlockBody, OpenBlock};
-use types::ids::BlockId;
 use types::transaction::SignedTransaction;
-use util::merklehash;
-
-/// Check the 256 transactions once
-const CHECK_NUM: usize = 0xff;
 
 lazy_static! {
     /// Block Reward
@@ -56,7 +49,7 @@ pub trait Drain {
     fn drain(self) -> StateDB;
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ExecutedBlock {
     pub block: OpenBlock,
     pub receipts: Vec<Receipt>,
@@ -66,9 +59,7 @@ pub struct ExecutedBlock {
     last_hashes: Arc<LastHashes>,
     account_gas_limit: U256,
     account_gas: HashMap<Address, U256>,
-    chain_owner: Address,
-    auto_exec_quota_limit: u64,
-    auto_exec: bool,
+    eth_compatibility: bool,
 }
 
 impl Deref for ExecutedBlock {
@@ -86,18 +77,18 @@ impl DerefMut for ExecutedBlock {
 }
 
 impl ExecutedBlock {
-    pub fn new(
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
         factories: Factories,
-        conf: GlobalSysConfig,
+        conf: &BlockSysConfig,
         tracing: bool,
         block: OpenBlock,
         db: StateDB,
         state_root: H256,
         last_hashes: Arc<LastHashes>,
+        eth_compatibility: bool,
     ) -> Result<Self, Error> {
         let mut state = State::from_existing(db, state_root, U256::default(), factories)?;
-        state.account_permissions = conf.account_permissions;
-        state.group_accounts = conf.group_accounts;
         state.super_admin_account = conf.super_admin_account;
 
         let r = ExecutedBlock {
@@ -115,9 +106,7 @@ impl ExecutedBlock {
             ),
             current_quota_used: Default::default(),
             receipts: Default::default(),
-            chain_owner: conf.chain_owner,
-            auto_exec_quota_limit: conf.auto_exec_quota_limit,
-            auto_exec: conf.auto_exec,
+            eth_compatibility,
         };
 
         Ok(r)
@@ -132,7 +121,11 @@ impl ExecutedBlock {
         EnvInfo {
             number: self.number(),
             author: *self.proposer(),
-            timestamp: self.timestamp(),
+            timestamp: if self.eth_compatibility {
+                self.timestamp() / 1000
+            } else {
+                self.timestamp()
+            },
             difficulty: U256::default(),
             last_hashes: Arc::clone(&self.last_hashes),
             gas_used: self.current_quota_used,
@@ -141,46 +134,12 @@ impl ExecutedBlock {
         }
     }
 
-    /// Execute transactions
-    /// Return false if be interrupted
-    pub fn apply_transactions(
-        &mut self,
-        executor: &Executor,
-        check_options: &CheckOptions,
-    ) -> bool {
-        let price_management = PriceManagement::new(executor);
-        let quota_price = price_management
-            .quota_price(BlockId::Pending)
-            .unwrap_or_else(PriceManagement::default_quota_price);
-        for (index, mut t) in self.body.transactions.clone().into_iter().enumerate() {
-            if index & CHECK_NUM == 0 && executor.is_interrupted.load(Ordering::SeqCst) {
-                executor.is_interrupted.store(false, Ordering::SeqCst);
-                return false;
-            }
-
-            let economical_model: EconomicalModel = *executor.economical_model.read();
-            if economical_model == EconomicalModel::Charge {
-                t.gas_price = quota_price;
-            }
-
-            self.apply_transaction(&*executor.engine, &t, economical_model, check_options);
-        }
-
-        let now = Instant::now();
-        self.state.commit().expect("commit trie error");
-        let new_now = Instant::now();
-        debug!("state root use {:?}", new_now.duration_since(now));
-
-        true
-    }
-
     #[allow(unknown_lints, clippy::too_many_arguments)] // TODO clippy
     pub fn apply_transaction(
         &mut self,
         engine: &Engine,
         t: &SignedTransaction,
-        economical_model: EconomicalModel,
-        check_options: &CheckOptions,
+        conf: &BlockSysConfig,
     ) {
         let mut env_info = self.env_info();
         self.account_gas
@@ -192,15 +151,7 @@ impl ExecutedBlock {
             .expect("account should exist in account_gas_limit");
 
         let has_traces = self.traces.is_some();
-        match self.state.apply(
-            &env_info,
-            engine,
-            t,
-            has_traces,
-            economical_model,
-            self.chain_owner,
-            check_options,
-        ) {
+        match self.state.apply(&env_info, engine, t, has_traces, conf) {
             Ok(outcome) => {
                 trace!("apply signed transaction {} success", t.hash());
                 if let Some(ref mut traces) = self.traces {
@@ -208,7 +159,7 @@ impl ExecutedBlock {
                 }
                 let transaction_quota_used = outcome.receipt.quota_used - self.current_quota_used;
                 self.current_quota_used = outcome.receipt.quota_used;
-                if check_options.quota {
+                if conf.check_options.quota {
                     if let Some(value) = self.account_gas.get_mut(t.sender()) {
                         *value = *value - transaction_quota_used;
                     }
@@ -220,12 +171,23 @@ impl ExecutedBlock {
     }
 
     /// Turn this into a `ClosedBlock`.
-    pub fn close(mut self, economical_model: EconomicalModel) -> ClosedBlock {
-        if self.auto_exec {
+    pub fn close(mut self, conf: &BlockSysConfig) -> ClosedBlock {
+        let mut env_info = self.env_info();
+        // In protocol version 0, 1:
+        // Auto Execution's env info author is default address
+        // In protocol version > 1:
+        // Auto Execution's env info author is block author
+        if conf.chain_version < 2 {
+            env_info.author = Address::default();
+        }
+
+        if conf.auto_exec {
             auto_exec(
                 &mut self.state,
-                self.auto_exec_quota_limit,
-                economical_model,
+                conf.auto_exec_quota_limit,
+                conf.economical_model,
+                env_info,
+                conf.chain_version,
             );
             self.state.commit().expect("commit trie error");
         }
@@ -233,10 +195,16 @@ impl ExecutedBlock {
         let mut block = Block::new(self.block);
         let state_root = *self.state.root();
         block.set_state_root(state_root);
-        let receipts_root = merklehash::MerkleTree::from_bytes(
-            self.receipts.iter().map(|r| r.rlp_bytes().to_vec()),
+        let receipts_root = cita_merklehash::Tree::from_hashes(
+            self.receipts
+                .iter()
+                .map(|r| r.rlp_bytes().to_vec().crypt_hash())
+                .collect::<Vec<_>>(),
+            cita_merklehash::merge,
         )
-        .get_root_hash();
+        .get_root_hash()
+        .cloned()
+        .unwrap_or(cita_merklehash::HASH_NULL);
 
         block.set_receipts_root(receipts_root);
         block.set_quota_used(self.current_quota_used);
@@ -263,7 +231,7 @@ impl ExecutedBlock {
 }
 
 // Block that prepared to commit to db.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ClosedBlock {
     /// Protobuf Block
     pub block: Block,

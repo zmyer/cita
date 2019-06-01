@@ -1,5 +1,5 @@
 // CITA
-// Copyright 2016-2018 Cryptape Technologies LLC.
+// Copyright 2016-2019 Cryptape Technologies LLC.
 
 // This program is free software: you can redistribute it
 // and/or modify it under the terms of the GNU General Public
@@ -15,7 +15,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-#![feature(try_from)]
 extern crate bincode;
 extern crate chrono;
 extern crate cita_crypto as crypto;
@@ -24,30 +23,30 @@ extern crate clap;
 #[macro_use]
 extern crate libproto;
 #[macro_use]
-extern crate logger;
+extern crate cita_logger as logger;
 extern crate proof;
 extern crate pubsub;
 #[macro_use]
 extern crate serde_derive;
 extern crate cita_types as types;
-extern crate serde_yaml;
-extern crate util;
+extern crate hashable;
 
 use bincode::{serialize, Infinite};
 use clap::App;
 use crypto::{CreateKey, KeyPair, PrivKey, Sign, Signature};
+use hashable::Hashable;
 use libproto::blockchain::{Block, BlockBody, BlockTxs, BlockWithProof};
 use libproto::router::{MsgType, RoutingKey, SubModules};
 use libproto::Message;
+use libproto::{TryFrom, TryInto};
 use proof::BftProof;
+use pubsub::channel::{self, RecvTimeoutError, Sender};
 use pubsub::start_pubsub;
 use std::collections::HashMap;
-use std::convert::{Into, TryFrom, TryInto};
-use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
+use std::convert::Into;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use types::{Address, H256};
-use util::Hashable;
 
 pub type PubType = (String, Vec<u8>);
 
@@ -98,10 +97,12 @@ fn build_block(
     let transaction_root = body.transactions_root().to_vec();
     let mut proof_blk = BlockWithProof::new();
 
+    let mut previous_proof = proof.clone();
+    previous_proof.height = height as usize - 1;
     block.mut_header().set_timestamp(time_stamp);
     block.mut_header().set_height(height);
     block.mut_header().set_prevhash(pre_block_hash.0.to_vec());
-    block.mut_header().set_proof(proof.clone().into());
+    block.mut_header().set_proof(previous_proof.into());
     block.mut_header().set_transactions_root(transaction_root);
     block.set_body(body.clone());
 
@@ -137,7 +138,7 @@ fn send_block(
 }
 
 fn main() {
-    logger::init_config("consensus_mock");
+    logger::init_config(&logger::LogFavour::File("consensus_mock"));
     info!("CITA: Consensus Mock");
 
     // set up the clap to receive info from CLI
@@ -156,13 +157,12 @@ fn main() {
         .get_matches();
 
     let default_interval = 3;
-    // get the mock data and parse it to serde_yaml format
     let interval = value_t!(matches, "interval", u64).unwrap_or(default_interval);
     let key_pair = KeyPair::gen_keypair();
     let pk_miner = key_pair.privkey();
 
-    let (tx_sub, rx_sub) = channel();
-    let (tx_pub, rx_pub) = channel();
+    let (tx_sub, rx_sub) = channel::unbounded();
+    let (tx_pub, rx_pub) = channel::unbounded();
 
     start_pubsub(
         "consensus",

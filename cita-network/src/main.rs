@@ -1,5 +1,5 @@
 // CITA
-// Copyright 2016-2017 Cryptape Technologies LLC.
+// Copyright 2016-2019 Cryptape Technologies LLC.
 
 // This program is free software: you can redistribute it
 // and/or modify it under the terms of the GNU General Public
@@ -24,29 +24,30 @@
 //!
 //! 1. Subscribe channel
 //!
-//!     |       Queue       | PubModule | Message Type   |
-//!     | ----------------- | --------- | -------------- |
-//!     | network_tx        | Auth      | Request        |
-//!     | network_consensus | Consensus | SignedProposal |
-//!     | network_consensus | Consensus | RawBytes       |
-//!     | network           | Chain     | Status         |
-//!     | network           | Chain     | SyncResponse   |
-//!     | network           | Jonsonrpc | RequestNet     |
-//!     | network           | Auth      | GetBlockTxn    |
-//!     | network           | Auth      | BlockTxn       |
+//!     |       Queue       | PubModule | Message Type          |
+//!     | ----------------- | --------- | --------------------- |
+//!     | network_tx        | Auth      | Request               |
+//!     | network_consensus | Consensus | CompactSignedProposal |
+//!     | network_consensus | Consensus | RawBytes              |
+//!     | network           | Chain     | Status                |
+//!     | network           | Chain     | SyncResponse          |
+//!     | network           | Jsonrpc   | RequestNet            |
+//!     | network           | Jsonrpc   | RequestPeersInfo      |
+//!     | network           | Auth      | GetBlockTxn           |
+//!     | network           | Auth      | BlockTxn              |
 //!
 //! 2. Publish channel
 //!
-//!     |       Queue       | PubModule | SubModule           | Message Type   |
-//!     | ----------------- | --------- | ------------------- | -------------- |
-//!     | network           | Net       | Chain, Executor     | SyncResponse   |
-//!     | network           | Net       | Snapshot            | SnapshotResp   |
-//!     | network           | Net       | Jsonrpc             | Response       |
-//!     | network_tx        | Net       | Auth                | Request        |
-//!     | network_consensus | Net       | Executor, Consensus | SignedProposal |
-//!     | network_consensus | Net       | Consensus           | RawBytes       |
-//!     | network           | Net       | Auth                | BlockTxn       |
-//!     | network           | Net       | Auth                | GetBlockTxn    |
+//!     |       Queue       | PubModule | SubModule           | Message Type          |
+//!     | ----------------- | --------- | ------------------- | --------------------- |
+//!     | network           | Net       | Chain, Executor     | SyncResponse          |
+//!     | network           | Net       | Snapshot            | SnapshotResp          |
+//!     | network           | Net       | Jsonrpc             | Response              |
+//!     | network_tx        | Net       | Auth                | Request               |
+//!     | network_consensus | Net       | Consensus           | ComapctSignedProposal |
+//!     | network_consensus | Net       | Consensus           | RawBytes              |
+//!     | network           | Net       | Auth                | BlockTxn              |
+//!     | network           | Net       | Auth                | GetBlockTxn           |
 //!
 //! ### p2p binary protocol
 //! | Start      | Full length | Key length | Key value      | Message value    |
@@ -78,185 +79,132 @@
 //! [`network_message_to_pubsub_message`]: ./citaprotocol/fn.network_message_to_pubsub_message.html
 //!
 
-#![feature(try_from)]
-#![feature(tool_lints)]
+#[macro_use]
+extern crate cita_logger as logger;
 
-extern crate byteorder;
-extern crate bytes;
-extern crate clap;
-extern crate dotenv;
-extern crate futures;
-extern crate native_tls;
-extern crate tokio_tls;
-#[macro_use]
-extern crate libproto;
-#[macro_use]
-extern crate logger;
-extern crate notify;
-extern crate pubsub;
-extern crate rand;
-#[cfg(test)]
-extern crate tempfile;
-extern crate tokio;
-#[macro_use]
-extern crate util;
-
-#[macro_use]
-extern crate serde_derive;
-
-pub mod citaprotocol;
+pub mod cita_protocol;
 pub mod config;
-pub mod connection;
-pub mod netserver;
-pub mod synchronizer;
-//pub mod sync_vec;
+pub mod mq_agent;
 pub mod network;
+pub mod node_manager;
+pub mod p2p_protocol;
+pub mod synchronizer;
 
+use crate::config::{AddressConfig, NetConfig};
+use crate::mq_agent::MqAgent;
+use crate::network::Network;
+use crate::node_manager::{NodesManager, DEFAULT_PORT};
+use crate::p2p_protocol::{
+    node_discovery::create_discovery_meta, transfer::create_transfer_meta, SHandle,
+};
+use crate::synchronizer::Synchronizer;
 use clap::App;
-use config::NetConfig;
-use connection::{manage_connect, Connections, Task};
-use libproto::router::{MsgType, RoutingKey, SubModules};
-use libproto::Message;
-use netserver::NetServer;
-use network::NetWork;
+use dotenv;
+use futures::prelude::*;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use pubsub::start_pubsub;
-use std::convert::TryFrom;
-use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::mpsc::channel;
 use std::thread;
-use std::time::Duration;
-use synchronizer::Synchronizer;
+use tentacle::{builder::ServiceBuilder, secio::SecioKeyPair};
+use util::micro_service_init;
 use util::set_panic_handler;
 
 include!(concat!(env!("OUT_DIR"), "/build_info.rs"));
 
-fn main() {
-    micro_service_init!("cita-network", "CITA:network");
-    info!("Version: {}", get_build_info_str(true));
+const NOTIFY_DELAY_SECS: u64 = 1;
 
+fn main() {
     // init app
-    // todo load config
     let matches = App::new("network")
         .version(get_build_info_str(true))
         .long_version(get_build_info_str(false))
         .author("Cryptape")
         .about("CITA Block Chain Node powered by Rust")
-        .args_from_usage("-c, --config=[FILE] 'Sets a custom config file'")
+        .args_from_usage(
+            "-c, --config=[FILE] 'Sets a custom config file'
+                        -a, --address=[FILE] 'Sets an address file'
+                        -s, --stdout 'Log to console'",
+        )
         .get_matches();
 
-    let config_path = matches.value_of("config").unwrap_or("config");
+    let stdout = matches.is_present("stdout");
+    micro_service_init!("cita-network", "CITA:network", stdout);
+    info!("Version: {}", get_build_info_str(true));
 
-    let config = NetConfig::new(config_path);
+    let config_file = matches.value_of("config").unwrap_or("network.toml");
 
-    // init pubsub
-
-    // split new_tx with other msg
-    let (ctx_sub_tx, crx_sub_tx) = channel();
-    let (ctx_pub_tx, crx_pub_tx) = channel();
-    start_pubsub(
-        "network_tx",
-        routing_key!([Auth >> Request, Auth >> GetBlockTxn, Auth >> BlockTxn]),
-        ctx_sub_tx,
-        crx_pub_tx,
-    );
-
-    let (ctx_sub_consensus, crx_sub_consensus) = channel();
-    let (ctx_pub_consensus, crx_pub_consensus) = channel();
-    start_pubsub(
-        "network_consensus",
-        routing_key!([Consensus >> SignedProposal, Consensus >> RawBytes]),
-        ctx_sub_consensus,
-        crx_pub_consensus,
-    );
-
-    let (ctx_sub, crx_sub) = channel();
-    let (ctx_pub, crx_pub) = channel();
-    start_pubsub(
-        "network",
-        routing_key!([
-            Chain >> Status,
-            Chain >> SyncResponse,
-            Jsonrpc >> RequestNet,
-            Snapshot >> SnapshotReq
-        ]),
-        ctx_sub,
-        crx_pub,
-    );
-
-    let (net_work_tx, net_work_rx) = channel();
-    // start server
-    // This brings up our server.
-    // all server recv msg directly publish to mq
-    let address_str = format!("0.0.0.0:{}", config.port.unwrap());
-    let address = address_str.parse::<SocketAddr>().unwrap();
-    let net_server = NetServer::new(net_work_tx.clone(), config.enable_tls.unwrap_or(false));
-
-    //network server listener
-    thread::spawn(move || net_server.server(address));
-
-    //connections manage to loop
-    let (tx, rx) = channel();
-    let (mut con, task_sender) = Connections::new(&config);
-    let mut watcher: RecommendedWatcher = Watcher::new(tx, Duration::from_secs(1)).unwrap();
-    let _ = watcher.watch(".", RecursiveMode::NonRecursive);
-
-    let (sync_tx, sync_rx) = channel();
-    let net_work = NetWork::new(
-        task_sender.clone(),
-        ctx_pub.clone(),
-        sync_tx,
-        ctx_pub_tx,
-        ctx_pub_consensus,
-        con.is_pause.clone(),
-        con.connect_number.clone(),
-    );
-    manage_connect(config_path, rx, task_sender.clone());
-
-    thread::spawn(move || con.run());
-
-    // loop deal data
-    thread::spawn(move || loop {
-        if let Ok((source, cita_req)) = net_work_rx.recv() {
-            net_work.receiver(source, cita_req);
-        }
-    });
-
-    // Sync loop
-    let mut synchronizer = Synchronizer::new(ctx_pub, task_sender.clone());
-    thread::spawn(move || loop {
-        if let Ok((source, payload)) = sync_rx.recv() {
-            synchronizer.receive(source, payload);
-        }
-    });
-
-    // Subscribe Auth Tx
-    let tx_task_sender = task_sender.clone();
-    thread::spawn(move || loop {
-        let (key, body) = crx_sub_tx.recv().unwrap();
-        let msg = Message::try_from(&body).unwrap();
-        trace!("Auth Tx from Local");
-        tx_task_sender.send(Task::Broadcast((key, msg))).unwrap();
-    });
-
-    // Subscribe Consensus Msg
-    thread::spawn(move || loop {
-        let (key, body) = crx_sub_consensus.recv().unwrap();
-        let msg = Message::try_from(&body).unwrap();
-        trace!("Consensus Msg from Local");
-        task_sender.send(Task::Broadcast((key, msg))).unwrap();
-    });
-
-    loop {
-        // Msg from MQ need proc before broadcast
-        let (key, body) = crx_sub.recv().unwrap();
-        trace!("handle delivery from {} payload {:?}", key, body);
-        net_work_tx.send((Source::LOCAL, (key, body))).unwrap();
+    let config_path = Path::new(config_file);
+    let mut dir = config_path
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .to_str()
+        .unwrap();
+    if dir.is_empty() {
+        dir = ".";
     }
-}
+    let fname = config_path
+        .file_name()
+        .expect("Wrong config file")
+        .to_str()
+        .unwrap()
+        .to_string()
+        .clone();
 
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
-pub enum Source {
-    LOCAL,
-    REMOTE,
+    // Init config
+    debug!("Config path {:?}", config_path);
+    let config = NetConfig::new(&config_file);
+    debug!("Network config is {:?}", config_file);
+
+    let addr_path = matches.value_of("address").unwrap_or("address");
+    let own_addr = AddressConfig::new(&addr_path);
+    debug!("Node address is {:?}", own_addr.addr);
+    // End init config
+
+    let mut nodes_mgr = NodesManager::from_config(config.clone(), own_addr.addr);
+    let mut mq_agent = MqAgent::default();
+    let mut synchronizer_mgr = Synchronizer::new(mq_agent.client(), nodes_mgr.client());
+    let mut network_mgr = Network::new(
+        mq_agent.client(),
+        nodes_mgr.client(),
+        synchronizer_mgr.client(),
+    );
+    mq_agent.set_nodes_mgr_client(nodes_mgr.client());
+    mq_agent.set_network_client(network_mgr.client());
+
+    let transfer_meta = create_transfer_meta(network_mgr.client(), nodes_mgr.client());
+    let mut service_cfg = ServiceBuilder::default()
+        .insert_protocol(transfer_meta)
+        .forever(true);
+
+    let discovery_flag = config.enable_discovery.unwrap_or(true);
+    let (tx, rx) = channel();
+    let mut watcher: RecommendedWatcher =
+        Watcher::new(tx, std::time::Duration::from_secs(NOTIFY_DELAY_SECS)).unwrap();
+    if discovery_flag {
+        let discovery_meta = create_discovery_meta(nodes_mgr.client());
+        service_cfg = service_cfg.insert_protocol(discovery_meta);
+    } else if watcher.watch(dir, RecursiveMode::NonRecursive).is_ok() {
+        let notify_client = nodes_mgr.client();
+        thread::spawn(move || {
+            NodesManager::notify_config_change(rx, notify_client, fname);
+        });
+    }
+
+    if nodes_mgr.is_enable_tls() {
+        service_cfg = service_cfg.key_pair(SecioKeyPair::secp256k1_generated());
+    }
+    let mut service = service_cfg.build(SHandle::new(nodes_mgr.client()));
+
+    let addr = format!("/ip4/0.0.0.0/tcp/{}", config.port.unwrap_or(DEFAULT_PORT));
+    let _ = service.listen(addr.parse().unwrap());
+    nodes_mgr.set_service_task_sender(service.control().clone());
+    // End init p2p protocols
+
+    // Run system
+    mq_agent.run();
+    thread::spawn(move || nodes_mgr.run());
+    thread::spawn(move || network_mgr.run());
+    thread::spawn(move || synchronizer_mgr.run());
+    tokio::run(service.for_each(|_| Ok(())));
+    // End run system
 }

@@ -19,14 +19,15 @@ use futures::future::Either;
 use futures::sync::{mpsc, oneshot};
 use futures::{Future, Sink, Stream};
 use hyper;
+use libproto::TryInto;
 use parking_lot::{Mutex, RwLock};
 use serde_json;
-use std::convert::{Into, TryInto};
+use std::convert::Into;
 use tokio_core::reactor::{Core, Timeout};
 
 use cita_types::{H256, U256};
 use configuration::UpStream;
-use jsonrpc_types::{request, rpctypes};
+use jsonrpc_types::{rpc_request, rpc_types};
 use libproto::blockchain::UnverifiedTransaction;
 
 #[derive(Debug)]
@@ -45,7 +46,7 @@ pub struct RpcClient {
 }
 
 impl RpcClient {
-    pub fn new(upstream: &UpStream) -> ::std::sync::Arc<Self> {
+    pub fn create(upstream: &UpStream) -> ::std::sync::Arc<Self> {
         let tb = ::std::thread::Builder::new().name("RpcClient".to_string());
         let uri = upstream.url.parse::<hyper::Uri>().unwrap();
         let (tx, rx) =
@@ -116,7 +117,7 @@ impl RpcClient {
 macro_rules! rpc_send_and_get_result_from_reply {
     ($upstream:ident, $request:ident, $result_type:path) => {{
         define_reply_type!(ReplyType, $result_type);
-        let rpc_cli = RpcClient::new($upstream);
+        let rpc_cli = RpcClient::create($upstream);
         let body: String = $request.into();
         let data = rpc_cli.do_post(&body)?;
         let reply: ReplyType = serde_json::from_slice(&data).map_err(|_| {
@@ -136,29 +137,29 @@ macro_rules! define_reply_type {
     ($reply_type:ident, $result_type:path) => {
         #[derive(Debug, Clone, Serialize, Deserialize)]
         struct $reply_type {
-            pub jsonrpc: Option<rpctypes::Version>,
-            pub id: rpctypes::Id,
+            pub jsonrpc: Option<rpc_types::Version>,
+            pub id: rpc_types::Id,
             pub result: $result_type,
         }
     };
 }
 
 pub fn cita_get_transaction_proof(upstream: &UpStream, tx_hash: H256) -> Result<Vec<u8>, Error> {
-    let req = request::GetTransactionProofParams::new(tx_hash.into()).into_request(1);
-    let result = rpc_send_and_get_result_from_reply!(upstream, req, rpctypes::Data);
+    let req = rpc_request::GetTransactionProofParams::new(tx_hash.into()).into_request(1);
+    let result = rpc_send_and_get_result_from_reply!(upstream, req, rpc_types::Data);
     Ok(result.into())
 }
 
 pub fn cita_block_number(upstream: &UpStream) -> Result<U256, Error> {
-    let req = request::BlockNumberParams::new().into_request(1);
+    let req = rpc_request::BlockNumberParams::new().into_request(1);
     let result = rpc_send_and_get_result_from_reply!(upstream, req, U256);
     Ok(result)
 }
 
-pub fn cita_get_metadata(upstream: &UpStream) -> Result<rpctypes::MetaData, Error> {
-    let height = rpctypes::BlockNumber::latest();
-    let req = request::GetMetaDataParams::new(height).into_request(1);
-    let result = rpc_send_and_get_result_from_reply!(upstream, req, rpctypes::MetaData);
+pub fn cita_get_metadata(upstream: &UpStream) -> Result<rpc_types::MetaData, Error> {
+    let height = rpc_types::BlockNumber::latest();
+    let req = rpc_request::GetMetaDataParams::new(height).into_request(1);
+    let result = rpc_send_and_get_result_from_reply!(upstream, req, rpc_types::MetaData);
     Ok(result)
 }
 
@@ -167,8 +168,8 @@ pub fn cita_send_transaction(
     utx: &UnverifiedTransaction,
 ) -> Result<H256, Error> {
     let tx_bytes: Vec<u8> = utx.try_into().unwrap();
-    let req = request::SendRawTransactionParams::new(tx_bytes.into()).into_request(1);
-    let result = rpc_send_and_get_result_from_reply!(upstream, req, rpctypes::TxResponse);
+    let req = rpc_request::SendRawTransactionParams::new(tx_bytes.into()).into_request(1);
+    let result = rpc_send_and_get_result_from_reply!(upstream, req, rpc_types::TxResponse);
     if result.status.to_uppercase() == "OK" {
         Ok(result.hash)
     } else {

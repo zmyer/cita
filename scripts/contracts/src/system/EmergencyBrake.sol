@@ -1,8 +1,8 @@
-pragma solidity ^0.4.24;
+pragma solidity 0.4.24;
 
 import "../common/Admin.sol";
 import "../common/ReservedAddrPublic.sol";
-import "../interfaces/IEmergencyBrake.sol";
+import "../../interaction/interface/IEmergencyBrake.sol";
 
 contract EmergencyBrake is IEmergencyBrake, ReservedAddrPublic {
     bool public state;

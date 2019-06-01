@@ -1,5 +1,5 @@
 // CITA
-// Copyright 2016-2017 Cryptape Technologies LLC.
+// Copyright 2016-2019 Cryptape Technologies LLC.
 
 // This program is free software: you can redistribute it
 // and/or modify it under the terms of the GNU General Public
@@ -15,19 +15,18 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-#![feature(try_from)]
 extern crate bincode;
 extern crate cita_crypto as crypto;
 extern crate cita_types;
 extern crate clap;
 #[macro_use]
 extern crate libproto;
+extern crate hashable;
 extern crate proof;
 extern crate rustc_serialize;
-extern crate util;
 
 #[macro_use]
-extern crate logger;
+extern crate cita_logger as logger;
 extern crate pubsub;
 extern crate rlp;
 #[macro_use]
@@ -37,12 +36,12 @@ extern crate serde_yaml;
 
 mod generate_block;
 
+use pubsub::channel::{self, Sender};
 use std::collections::HashMap;
-use std::convert::{From, TryFrom};
+use std::convert::From;
 use std::env;
 use std::io::Read;
 use std::str::FromStr;
-use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::time;
 use std::{fs, u8};
@@ -55,6 +54,7 @@ use crypto::{CreateKey, KeyPair, PrivKey};
 use generate_block::BuildBlock;
 use libproto::router::{MsgType, RoutingKey, SubModules};
 use libproto::Message;
+use libproto::TryFrom;
 use pubsub::start_pubsub;
 
 pub type PubType = (String, Vec<u8>);
@@ -64,7 +64,7 @@ const GENESIS_TIMESTAMP: u64 = 1_524_000_000;
 fn main() {
     dotenv::dotenv().ok();
     env::set_var("RUST_BACKTRACE", "full");
-    logger::init_config("chain-executor-mock");
+    logger::init_config(&logger::LogFavour::File("chain-executor-mock"));
     info!("CITA:Chain executor mock");
 
     let matches = App::new("Chain executor mock")
@@ -90,8 +90,8 @@ fn main() {
         serde_yaml::from_str(mock_data_string.as_str()).expect("Parse mock data error");
 
     info!("mock-data-path={}", mock_data_path);
-    let (tx_sub, rx_sub) = channel();
-    let (tx_pub, rx_pub) = channel();
+    let (tx_sub, rx_sub) = channel::unbounded();
+    let (tx_pub, rx_pub) = channel::unbounded();
 
     start_pubsub(
         "consensus",

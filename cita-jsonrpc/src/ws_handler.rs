@@ -16,13 +16,15 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use helper::{select_topic, RpcMap, TransferType};
-use jsonrpc_types::request::{PartialRequest, RequestInfo};
-use jsonrpc_types::response::RpcFailure;
+use jsonrpc_proto::complete::CompleteInto;
+use jsonrpc_types::rpc_request::{PartialRequest, RequestInfo};
+use jsonrpc_types::rpc_response::RpcFailure;
 use jsonrpc_types::Error;
 use libproto::request::Request as ProtoRequest;
 use num_cpus;
+use pubsub::channel::Sender;
 use serde_json;
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 use threadpool::ThreadPool;
 use ws::{self as ws, CloseCode, Factory, Handler};
 
@@ -30,13 +32,13 @@ pub struct WsFactory {
     //TODO 定时清理工作
     responses: RpcMap,
     thread_pool: ThreadPool,
-    tx: mpsc::Sender<(String, ProtoRequest)>,
+    tx: Sender<(String, ProtoRequest)>,
 }
 
 impl WsFactory {
     pub fn new(
         responses: RpcMap,
-        tx: mpsc::Sender<(String, ProtoRequest)>,
+        tx: Sender<(String, ProtoRequest)>,
         thread_num: usize,
     ) -> WsFactory {
         let thread_number = if thread_num == 0 {
@@ -118,5 +120,5 @@ pub struct WsHandler {
     responses: RpcMap,
     thread_pool: ThreadPool,
     sender: ws::Sender,
-    tx: mpsc::Sender<(String, ProtoRequest)>,
+    tx: Sender<(String, ProtoRequest)>,
 }

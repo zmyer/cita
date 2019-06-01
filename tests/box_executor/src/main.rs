@@ -1,5 +1,5 @@
 // CITA
-// Copyright 2016-2017 Cryptape Technologies LLC.
+// Copyright 2016-2019 Cryptape Technologies LLC.
 
 // This program is free software: you can redistribute it
 // and/or modify it under the terms of the GNU General Public
@@ -15,21 +15,18 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-#![feature(try_from)]
 extern crate bincode;
 extern crate cita_crypto as crypto;
 extern crate cita_types;
 extern crate clap;
-extern crate common_types;
-extern crate core;
 #[macro_use]
 extern crate libproto;
 extern crate dotenv;
+extern crate hashable;
 extern crate proof;
 extern crate rustc_serialize;
-extern crate util;
 #[macro_use]
-extern crate logger;
+extern crate cita_logger as logger;
 
 extern crate pubsub;
 extern crate rlp;
@@ -48,7 +45,7 @@ use std::env;
 fn main() {
     dotenv::dotenv().ok();
     env::set_var("RUST_BACKTRACE", "full");
-    logger::init_config("box_executor");
+    logger::init_config(&logger::LogFavour::File("box_executor"));
     let matches = App::new("mock-consensus")
         .arg(
             clap::Arg::with_name("mock-data")

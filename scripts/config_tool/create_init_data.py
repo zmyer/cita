@@ -10,7 +10,7 @@ DEFAULT_CONFIG = '''
 Contracts:
 - SysConfig:
   - delayBlockNumber: 1
-  - checkPermission: false
+  - checkCallPermission: false
   - checkSendTxPermission: false
   - checkCreateContractPermission: false
   - checkQuota: false
@@ -22,9 +22,9 @@ Contracts:
   - website: https://www.example.com
   - blockInterval: 3000
   - economicalModel: 0
-  - name: Nervos AppChain Test Token
-  - symbol: NATT
-  - avatar: https://cdn.cryptape.com/icon_appchain.png
+  - name: CITA Test Token
+  - symbol: CTT
+  - avatar: https://cdn.cryptape.com/icon_cita.png
   - autoExec: false
 - QuotaManager:
   - admin: '0x4b5ae4567ad5d9fb92bc9afd6a657e6fa13a2523'
@@ -46,7 +46,7 @@ Contracts:
 - Admin:
   - admin: '0x4b5ae4567ad5d9fb92bc9afd6a657e6fa13a2523'
 - VersionManager:
-  - version: 1
+  - version: 2
 - PriceManager:
   - quotaPrice: 1000000
 '''
@@ -98,7 +98,7 @@ class InitializationData(object):
 
     @classmethod
     def load_from_string(cls, cfg):
-        data = yaml.load(cfg)
+        data = yaml.safe_load(cfg)
         contracts_cfgs = dictlist_to_ordereddict(data['Contracts'])
         for name, arguments in contracts_cfgs.items():
             contracts_cfgs[name] = dictlist_to_ordereddict(arguments)

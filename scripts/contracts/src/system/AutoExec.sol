@@ -1,8 +1,8 @@
-pragma solidity ^0.4.24;
+pragma solidity 0.4.24;
 
 import "../common/Admin.sol";
 import "../common/ReservedAddrConstant.sol";
-import "../interfaces/IAutoExec.sol";
+import "../../interaction/interface/IAutoExec.sol";
 import "../lib/ContractCheck.sol";
 
 /// @title Manage the scheduled executing contract.
